@@ -7,6 +7,8 @@ import {
   FAST_PATH_HBM_HIT_NS,
   FAST_PATH_SRAM_HIT_NS,
   HANDLE_INSTALL_NS,
+  HAZARD_RECIRC_NS,
+  ShareGPTWorkload,
   SLOW_PATH_CUCKOO_NS,
   SplitMix64,
   ZIPF_ALPHA,
@@ -21,6 +23,10 @@ export function promptHash(tokens: number[]): bigint {
   return h;
 }
 
+export function hashPromptText(s: string): bigint {
+  return promptHash(Array.from(s, (c) => c.charCodeAt(0)));
+}
+
 function putReclaim(tkv: TensorKVAppliance, ctx: number, bid: number, policy: "lru" | "lfru", prefixHash?: bigint) {
   let res = tkv.put(ctx, bid, undefined, prefixHash);
   let tries = 0;
@@ -33,12 +39,14 @@ function putReclaim(tkv: TensorKVAppliance, ctx: number, bid: number, policy: "l
 }
 
 export function occupancySweep(loads = [0.5, 0.7, 0.8, 0.9, 0.95]) {
+  // Browser table is smaller than the Python report (1024 buckets / 6000 ops)
+  // so the page stays interactive; the trend is the same.
   const rng = new SplitMix64(1n);
   const nBuckets = 512;
   const nOps = 3000;
   const cap = nBuckets * 4;
   return loads.map((load) => {
-    const tkv = new TensorKVAppliance({ nBuckets, nPages: cap + 256, storePayloads: false });
+    const tkv = new TensorKVAppliance({ nBuckets, nPages: cap + 256, storePayloads: false, seed: 1 });
     const target = Math.floor(cap * load);
     for (let i = 0; i < target; i++) tkv.put(1, i);
     const fillTotal = tkv.table.fastInserts + tkv.table.slowInserts;
@@ -76,7 +84,7 @@ export function occupancySweep(loads = [0.5, 0.7, 0.8, 0.9, 0.95]) {
     const churnFast = tkv.table.fastInserts - fast0;
     const churnSlow = tkv.table.slowInserts - slow0;
     const extraNs =
-      (tkv.scoreboard.recirculations - recirc0) * 80 + churnSlow * (SLOW_PATH_CUCKOO_NS - FAST_PATH_SRAM_HIT_NS);
+      (tkv.scoreboard.recirculations - recirc0) * HAZARD_RECIRC_NS + churnSlow * (SLOW_PATH_CUCKOO_NS - FAST_PATH_SRAM_HIT_NS);
     const idealNs = nOps * FAST_PATH_HBM_HIT_NS;
     return {
       load,
@@ -177,6 +185,7 @@ export function evictionSensitivity() {
         nBuckets: Math.max(64, Math.floor((cap + 3) / 2)),
         nPages: cap,
         storePayloads: false,
+        seed: 11,
       });
       for (let b = 0; b < nPrefix; b++) tkv.put(0, b, undefined, prefixHash);
       tkv.publishPrefix(prefixHash, 0, Array.from({ length: nPrefix }, (_, i) => i));
@@ -224,6 +233,145 @@ export function evictionSensitivity() {
 
 export function isolationExperiment() {
   return (["fifo", "qos", "pacing", "both"] as const).map((p) => simulateNoisyNeighbor(p));
+}
+
+export function sharegptEviction(capacityFrac = 0.6, seed = 23) {
+  const wl = new ShareGPTWorkload({ seed });
+  const cap = Math.max(wl.prefixBlocks + wl.uniqueBlocks, Math.floor(wl.workingSetBlocks * capacityFrac));
+  const out: Record<
+    "lru" | "lfru",
+    { policy: string; prefixSurvival: number; hitRate: number; capacityBlocks: number; workingSet: number }
+  > = {
+    lru: { policy: "lru", prefixSurvival: 0, hitRate: 0, capacityBlocks: cap, workingSet: wl.workingSetBlocks },
+    lfru: { policy: "lfru", prefixSurvival: 0, hitRate: 0, capacityBlocks: cap, workingSet: wl.workingSetBlocks },
+  };
+  for (const policy of ["lru", "lfru"] as const) {
+    const tkv = new TensorKVAppliance({
+      nBuckets: Math.max(128, cap),
+      nPages: cap,
+      storePayloads: false,
+      seed,
+    });
+    for (let pid = 0; pid < wl.nPrefixes; pid++) {
+      const ctx = 1000 + pid;
+      const ph = wl.prefixHash(pid);
+      for (let b = 0; b < wl.prefixBlocks; b++) putReclaim(tkv, ctx, b, policy, ph);
+      tkv.publishPrefix(ph, ctx, Array.from({ length: wl.prefixBlocks }, (_, i) => i));
+      tkv.probe(ph);
+      tkv.probe(ph);
+    }
+    for (const sess of wl.sessions) tkv.probe(wl.prefixHash(sess.prefixId));
+    for (const sess of wl.sessions) {
+      for (let u = 0; u < sess.uniqueBlocks; u++) putReclaim(tkv, sess.contextId, u, policy);
+    }
+    const rng = new SplitMix64(BigInt(seed + 1));
+    let prefixLive = 0;
+    for (let pid = 0; pid < wl.nPrefixes; pid++) {
+      const g = tkv.get(1000 + pid, Array.from({ length: wl.prefixBlocks }, (_, i) => i));
+      prefixLive += wl.prefixBlocks - g.misses.length;
+    }
+    const survival = (100 * prefixLive) / Math.max(1, wl.nPrefixes * wl.prefixBlocks);
+    let mixedHits = 0;
+    let mixedN = 0;
+    for (let i = 0; i < 600; i++) {
+      mixedN++;
+      const sess = wl.sessions[rng.randint(0, wl.sessions.length - 1)];
+      const g =
+        rng.nextFloat() < 0.65
+          ? tkv.get(1000 + sess.prefixId, [rng.randint(0, wl.prefixBlocks - 1)])
+          : tkv.get(sess.contextId, [rng.randint(0, sess.uniqueBlocks - 1)]);
+      if (g.ok) mixedHits++;
+    }
+    out[policy] = {
+      policy,
+      prefixSurvival: Number(survival.toFixed(2)),
+      hitRate: Number(((100 * mixedHits) / Math.max(1, mixedN)).toFixed(2)),
+      capacityBlocks: cap,
+      workingSet: wl.workingSetBlocks,
+    };
+  }
+  return {
+    ...out,
+    lfruMinusLruSurvival: Number((out.lfru.prefixSurvival - out.lru.prefixSurvival).toFixed(2)),
+  };
+}
+
+function summaryNs(xs: number[]) {
+  if (!xs.length) return { n: 0, mean: 0, p50: 0, p90: 0, p99: 0, max: 0 };
+  const ys = [...xs].sort((a, b) => a - b);
+  const at = (p: number) => ys[Math.min(ys.length - 1, Math.max(0, Math.round((p / 100) * (ys.length - 1))))];
+  return {
+    n: xs.length,
+    mean: xs.reduce((a, b) => a + b, 0) / xs.length,
+    p50: at(50),
+    p90: at(90),
+    p99: at(99),
+    max: ys[ys.length - 1],
+  };
+}
+
+export function getLatencyHistogram(nKeys = 256, nOps = 800, seed = 3) {
+  const rng = new SplitMix64(BigInt(seed));
+  const tkv = new TensorKVAppliance({ nBuckets: 256, nPages: nKeys + 64, storePayloads: false, seed });
+  const tkvSlow = new TensorKVAppliance({
+    nBuckets: 256,
+    nPages: nKeys + 64,
+    storePayloads: false,
+    fastSlowSplit: false,
+    seed: seed + 1,
+  });
+  for (let i = 0; i < nKeys; i++) {
+    tkv.put(1, i);
+    tkvSlow.put(1, i);
+  }
+  const sampler = new ZipfSampler(nKeys, ZIPF_ALPHA, rng);
+  const samples: number[] = [];
+  const slowSamples: number[] = [];
+  const lo = 1000;
+  const hi = 20000;
+  const nBins = 24;
+  const counts = Array(nBins).fill(0);
+  const width = (hi - lo) / nBins;
+  const kinds = { hit: 0, gather: 0, miss: 0, hazard: 0 };
+  for (let i = 0; i < nOps; i++) {
+    const u = rng.nextFloat();
+    let g;
+    if (u < 0.05) {
+      const vic = rng.randint(0, nKeys - 1);
+      tkv.beginEvictKey(1, vic);
+      g = tkv.get(1, [vic]);
+      tkv.completeEvictKey(1, vic);
+      tkv.put(1, vic);
+      kinds.hazard++;
+    } else if (u < 0.12) {
+      g = tkv.get(1, [nKeys + rng.randint(0, 50)]);
+      kinds.miss++;
+    } else if (u < 0.28) {
+      g = tkv.get(1, Array.from({ length: 8 }, () => sampler.sampleIndex()));
+      kinds.gather++;
+    } else {
+      g = tkv.get(1, [sampler.sampleIndex()]);
+      kinds.hit++;
+    }
+    samples.push(g.latencyNs);
+    if (g.latencyNs < lo) {
+      /* underflow */
+    } else if (g.latencyNs >= hi) {
+      /* overflow */
+    } else {
+      counts[Math.min(nBins - 1, Math.floor((g.latencyNs - lo) / width))]++;
+    }
+    slowSamples.push(tkvSlow.get(1, [sampler.sampleIndex()]).latencyNs);
+  }
+  const fast = summaryNs(samples);
+  const slow = summaryNs(slowSamples);
+  return {
+    summaryNs: fast,
+    slowPathSummaryNs: slow,
+    histogram: counts.map((count, i) => ({ lo: lo + i * width, hi: lo + (i + 1) * width, count })),
+    kinds,
+    nOps,
+  };
 }
 
 export function evalTables() {
@@ -281,6 +429,9 @@ export function runAllExperiments() {
       paced: simulateAttentionIncast({ paced: true }),
     },
     drr: drrFairness(),
+    sharegpt: sharegptEviction(0.6),
+    sharegpt80: sharegptEviction(0.8),
+    getLatency: getLatencyHistogram(),
     baselines: runBaselineSuite(),
   };
 }

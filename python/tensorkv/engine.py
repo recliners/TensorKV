@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .constants import BYTES_PER_TOKEN_LLAMA70B_INT4, DEFAULT_CREDIT_GBPS, TOKENS_PER_BLOCK
+from .constants import BYTES_PER_TOKEN_LLAMA70B_INT4, DEFAULT_CREDIT_GBPS, LINK_GBPS, TOKENS_PER_BLOCK
 from .hashutil import mix64
 from .libtkv import TensorKVContext
 from .timing import attention_compute_ms, serialize_ms, ttft_breakdown
@@ -120,7 +120,7 @@ class PagedEngine:
             gathered_bytes=logical,
             get_latency_ns=fetch.latency_ns,
             probe_latency_ns=probe_ns,
-            credit_gbps=DEFAULT_CREDIT_GBPS,
+            credit_gbps=LINK_GBPS,
         )
         req.ttft_ms = parts.total_ms
         req.ttft_setup_ms = parts.setup_ms

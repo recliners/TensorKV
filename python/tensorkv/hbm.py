@@ -1,7 +1,8 @@
 """Banked HBM: payloads and full keys live here, not in SRAM slots.
 
-Paper appendix: each SRAM slot stores {32b fingerprint, 32b phys}. Full keys
-reside in HBM and are checked on a fingerprint match (tag-collision path).
+Each SRAM slot stores {32b fingerprint, 32b phys}. Full keys reside in HBM
+and are checked on every fingerprint match, so a tag collision cannot alias
+another key.
 """
 
 from __future__ import annotations

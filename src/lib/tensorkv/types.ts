@@ -14,6 +14,10 @@ export const RMT_LOOKUP_NS = 150;
 export const HAZARD_RECIRC_NS = 80;
 export const SLOW_PATH_CUCKOO_NS = 12400;
 export const FPGA_CYCLE_NS = 4;
+export const HASH_CYCLES = 1;
+export const SRAM_CYCLES = 2;
+export const MATCH_CYCLES = 1;
+export const DMA_DESC_CYCLES = 4;
 export const CROSSBAR_NOC_CYCLES = 20;
 export const ATOMIC_COMMIT_CYCLES = 1;
 export const DRR_QUANTUM_BYTES = 16384;
@@ -96,6 +100,74 @@ export class SplitMix64 {
   randint(lo: number, hi: number): number {
     const span = hi - lo + 1;
     return lo + Number(this.nextU64() % BigInt(span));
+  }
+}
+
+export function rmtLookupNs(nBlockIds: number) {
+  const n = Math.max(1, nBlockIds);
+  const extra = Math.max(0, n - 1);
+  const per = (HASH_CYCLES + SRAM_CYCLES + MATCH_CYCLES) * FPGA_CYCLE_NS;
+  return RMT_LOOKUP_NS + extra * per;
+}
+
+export function dmaDescriptorNs(nHits: number) {
+  return DMA_DESC_CYCLES * FPGA_CYCLE_NS + Math.max(0, nHits) * FPGA_CYCLE_NS;
+}
+
+export type ShareGPTSession = {
+  sessionId: number;
+  prefixId: number;
+  prefixBlocks: number;
+  uniqueBlocks: number;
+  contextId: number;
+};
+
+export class ShareGPTWorkload {
+  nPrefixes: number;
+  nSessions: number;
+  prefixBlocks: number;
+  uniqueBlocks: number;
+  alpha: number;
+  seed: number;
+  sessions: ShareGPTSession[];
+
+  constructor(
+    opts: {
+      nPrefixes?: number;
+      nSessions?: number;
+      prefixBlocks?: number;
+      uniqueBlocks?: number;
+      alpha?: number;
+      seed?: number;
+    } = {},
+  ) {
+    this.nPrefixes = opts.nPrefixes ?? 3;
+    this.nSessions = opts.nSessions ?? 24;
+    this.prefixBlocks = opts.prefixBlocks ?? 24;
+    this.uniqueBlocks = opts.uniqueBlocks ?? 3;
+    this.alpha = opts.alpha ?? ZIPF_ALPHA;
+    this.seed = opts.seed ?? 7;
+    const rng = new SplitMix64(BigInt(this.seed));
+    const sampler = new ZipfSampler(this.nPrefixes, this.alpha, rng);
+    this.sessions = [];
+    for (let i = 0; i < this.nSessions; i++) {
+      const pid = sampler.sampleIndex();
+      this.sessions.push({
+        sessionId: i,
+        prefixId: pid,
+        prefixBlocks: this.prefixBlocks,
+        uniqueBlocks: this.uniqueBlocks,
+        contextId: i + 1,
+      });
+    }
+  }
+
+  get workingSetBlocks() {
+    return this.nPrefixes * this.prefixBlocks + this.nSessions * this.uniqueBlocks;
+  }
+
+  prefixHash(prefixId: number) {
+    return BigInt(0xa11ce000 + prefixId);
   }
 }
 

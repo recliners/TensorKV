@@ -3,6 +3,7 @@
 import { useRef, useState } from "react";
 import { SiteShell } from "@/components/site-shell";
 import { TensorKVAppliance } from "@/lib/tensorkv/appliance";
+import { hashPromptText } from "@/lib/tensorkv/experiments";
 import type { TraceEvent } from "@/lib/tensorkv/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -30,12 +31,6 @@ export default function PlaygroundPage() {
   const [log, setLog] = useState<Log[]>([]);
   const [gathered, setGathered] = useState("");
 
-  const hashPrompt = (s: string) => {
-    let h = 0x123456789n;
-    for (let i = 0; i < s.length; i++) h = (h * 131n + BigInt(s.charCodeAt(i))) & ((1n << 64n) - 1n);
-    return h;
-  };
-
   const push = (events: TraceEvent[], summary: string) => {
     setLog((prev) => [{ t: Date.now(), events, summary }, ...prev].slice(0, 24));
     refresh();
@@ -56,13 +51,13 @@ export default function PlaygroundPage() {
     push(r.events, `GET hits=[${r.hits}] misses=[${r.misses}] recirc=${r.recirculations}`);
   };
   const onProbe = () => {
-    const h = hashPrompt(prompt);
+    const h = hashPromptText(prompt);
     const r = tkv.probe(h);
     push(r.events, r.hit ? `PROBE HIT handles=[${r.handles}] ref=${r.refcount}` : "PROBE MISS");
   };
   const onPublish = () => {
     const ids = (tkv.contexts.get(Number(ctx)) ?? []).slice();
-    tkv.publishPrefix(hashPrompt(prompt), Number(ctx), ids);
+    tkv.publishPrefix(hashPromptText(prompt), Number(ctx), ids);
     push(
       [{ op: "PROBE", path: "fast", stage: "register", detail: `prefix ${prompt} blocks=${ids.length}`, latency_ns: 0 }],
       `登记前缀「${prompt}」共 ${ids.length} 块`,

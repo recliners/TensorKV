@@ -151,8 +151,8 @@ def simulate_noisy_neighbor(
             if get_drop >= get_rate and get_rate > 0:
                 get_lat = RTO_MS
             elif in_burst and not use_pacing:
-                # Admitted GET, write engine full of unpaced PUT.
-                get_lat = max(device_hol_ms, device_hol_cap_ms * 0.25)
+                # Admitted GET shares the HBM write engine with unpaced PUT.
+                get_lat = device_hol_ms if device_hol_ms > 0 else gather_ms
             elif in_burst and use_pacing and not use_qos:
                 get_lat = GEMV_SLICE_MS
             else:

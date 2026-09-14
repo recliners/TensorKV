@@ -23,5 +23,8 @@ export {
   evalTables,
   runAllExperiments,
   promptHash,
+  hashPromptText,
   drrFairness,
+  sharegptEviction,
+  getLatencyHistogram,
 } from "./experiments";

@@ -346,8 +346,25 @@ class TestBaselinesAndPaperTables(unittest.TestCase):
         t = ttft_sim("tensorkv")
         self.assertAlmostEqual(t.setup_ms, 18.0, delta=0.05)
         self.assertGreater(t.fetch_ms, 200.0)
+        self.assertLess(t.fetch_ms, 250.0)
         self.assertAlmostEqual(t.compute_ms, 15.0, delta=0.05)
         self.assertEqual(t.payload_bytes, 32_768 * 81_920)
+
+    def test_ttft_miss_keeps_prefill_in_compute(self) -> None:
+        miss = ttft_sim("tensorkv", prefix_hit=False)
+        self.assertLess(miss.setup_ms, 1.0)
+        self.assertAlmostEqual(miss.compute_ms, 1200.0, delta=1.0)
+        self.assertGreater(miss.fetch_ms, 200.0)
+        self.assertLess(miss.fetch_ms, 250.0)
+
+    def test_engine_ttft_fetch_uses_100gbe(self) -> None:
+        eng = PagedEngine(bytes_per_token=81_920)
+        n = 256
+        req = eng.submit(1, list(range(n)))
+        expected = n * 81_920 * 8 / 100e9 * 1e3
+        self.assertAlmostEqual(req.ttft_fetch_ms, expected, delta=2.0)
+        credit_ms = n * 81_920 * 8 / 40e9 * 1e3
+        self.assertLess(req.ttft_fetch_ms, credit_ms * 0.6)
 
     def test_tbt_1gb_named_parts(self) -> None:
         tkv = tbt_sim("tensorkv")
@@ -473,14 +490,25 @@ class TestZipfAndWorkloads(unittest.TestCase):
         hot = sharegpt_eviction(0.8)
         self.assertGreaterEqual(hot["lfru"]["prefix_survival_pct"], hot["lru"]["prefix_survival_pct"])
 
-    def test_prefix_ttft_gap_on_32k_is_obvious(self) -> None:
+    def test_prefix_ttft_gap_scales_with_prompt(self) -> None:
         small = prefix_activation(256)
         self.assertLess(small["second_ttft_ms"], small["first_ttft_ms"])
         self.assertGreater(small["first_ttft_parts"]["compute"], small["second_ttft_parts"]["compute"])
-        large = prefix_activation(4096)
-        self.assertGreater(large["ttft_gap_ms"], 50.0)
-        self.assertGreater(large["first_ttft_parts"]["compute"], 100.0)
-        self.assertLess(large["second_ttft_parts"]["compute"], 10.0)
+        mid = prefix_activation(4096)
+        self.assertGreater(mid["ttft_gap_ms"], 50.0)
+        self.assertGreater(mid["first_ttft_parts"]["compute"], 100.0)
+        self.assertLess(mid["second_ttft_parts"]["compute"], 10.0)
+        hit = ttft_sim("tensorkv", 32_768)
+        miss = ttft_sim("recompute", 32_768)
+        self.assertAlmostEqual(hit.setup_ms, 18.0, delta=0.05)
+        self.assertGreater(miss.total_ms - hit.total_ms, 900.0)
+
+    def test_repo_root_finds_workspace(self) -> None:
+        from tensorkv.experiments import repo_root
+
+        root = repo_root()
+        self.assertTrue((root / "package.json").exists())
+        self.assertTrue((root / "python" / "tensorkv").is_dir())
 
     def test_drr_is_fair_and_preempts_put(self) -> None:
         r = drr_fairness()

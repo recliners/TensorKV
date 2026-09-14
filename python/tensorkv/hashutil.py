@@ -1,7 +1,7 @@
 """Fingerprint and bucket hashes used by the RMT match-action stages.
 
-The paper stores a 32-bit fingerprint plus a 32-bit physical pointer per slot
-and verifies the full key in HBM on a fingerprint match.
+SRAM stores a 32-bit fingerprint plus a 32-bit physical pointer per slot
+and verifies the full key in HBM on every fingerprint match.
 """
 
 from __future__ import annotations

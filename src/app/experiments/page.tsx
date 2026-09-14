@@ -71,7 +71,7 @@ export default function ExperimentsPage() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">测试床实验</h1>
           <p className="mt-2 max-w-3xl text-sm text-muted-foreground">
-            下面的曲线是浏览器里跑出来的器件/网络模型，不是贴进去的表。LFRU 要能看出前缀存活率远高于 LRU；隔离四档要分成 200 / 40 / 15 / 3.5 ms；占用升高时慢路径和 kick 次数要明显变差。
+            下面的曲线是浏览器里跑出来的器件/网络模型，不是贴进去的表。LFRU 要能看出前缀存活率远高于 LRU；隔离四档要分成 200 / 40 / 15 / 3.5 ms；占用升高时慢路径和 kick 次数要明显变差。占用扫在浏览器里用 512 桶 / 3000 ops（Python 报告是 1024 / 6000），趋势相同。
           </p>
         </div>
         <Button onClick={run} disabled={running}>
@@ -214,6 +214,73 @@ export default function ExperimentsPage() {
               </p>
               <p className="text-muted-foreground">
                 占用 kick：{data.occupancy.map((p) => `${Math.round(p.load * 100)}%→${p.kicks}`).join("，")}。
+              </p>
+            </CardContent>
+          </Card>
+
+          <Card className="bg-card/80">
+            <CardHeader>
+              <CardTitle className="text-base">ShareGPT 多前缀洪水</CardTitle>
+              <CardDescription>
+                几个 Zipf 热 system prompt + 每会话 unique 后缀。容量 60% 时 LFRU 应比 LRU 多保住共享前缀。
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="h-[280px]">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart
+                  data={[
+                    {
+                      name: "60% 容量",
+                      lru: data.sharegpt.lru.prefixSurvival,
+                      lfru: data.sharegpt.lfru.prefixSurvival,
+                    },
+                    {
+                      name: "80% 容量",
+                      lru: data.sharegpt80.lru.prefixSurvival,
+                      lfru: data.sharegpt80.lfru.prefixSurvival,
+                    },
+                  ]}
+                >
+                  <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.85 0.04 200 / 15%)" />
+                  <XAxis dataKey="name" stroke="#94a3b8" />
+                  <YAxis stroke="#94a3b8" domain={[0, 100]} />
+                  <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #334155" }} />
+                  <Legend />
+                  <Bar dataKey="lru" fill="#f87171" name="LRU 前缀存活 %" />
+                  <Bar dataKey="lfru" fill="#34d399" name="LFRU 前缀存活 %" />
+                </BarChart>
+              </ResponsiveContainer>
+              <p className="mt-2 text-xs text-muted-foreground">
+                60% 存活差 {data.sharegpt.lfruMinusLruSurvival} 个百分点；混合命中 LRU {data.sharegpt.lru.hitRate}% / LFRU {data.sharegpt.lfru.hitRate}%。
+              </p>
+            </CardContent>
+          </Card>
+
+          <Card className="lg:col-span-2 bg-card/80">
+            <CardHeader>
+              <CardTitle className="text-base">GET 延迟直方图</CardTitle>
+              <CardDescription>
+                Zipf 命中 + 8 块 gather + miss + hazard。快慢分流打开时 P50 应明显低于关掉分流的控制核路径。
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="h-[260px]">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart
+                  data={data.getLatency.histogram.map((b) => ({
+                    ns: Math.round(b.lo),
+                    count: b.count,
+                  }))}
+                >
+                  <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.85 0.04 200 / 15%)" />
+                  <XAxis dataKey="ns" stroke="#94a3b8" />
+                  <YAxis stroke="#94a3b8" />
+                  <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #334155" }} />
+                  <Bar dataKey="count" fill="#38bdf8" name="次数" />
+                </BarChart>
+              </ResponsiveContainer>
+              <p className="mt-2 font-mono text-xs text-muted-foreground">
+                快路径 P50 {data.getLatency.summaryNs.p50.toFixed(0)} ns / P99 {data.getLatency.summaryNs.p99.toFixed(0)} ns；无分流 P50 {data.getLatency.slowPathSummaryNs.p50.toFixed(0)} ns。
+                hit {data.getLatency.kinds.hit} · gather {data.getLatency.kinds.gather} · miss {data.getLatency.kinds.miss} · hazard {data.getLatency.kinds.hazard}
               </p>
             </CardContent>
           </Card>

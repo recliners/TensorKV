@@ -21,6 +21,7 @@ from .constants import (
     FAST_PATH_HBM_HIT_NS,
     FAST_PATH_SRAM_HIT_NS,
     HANDLE_INSTALL_NS,
+    HAZARD_RECIRC_NS,
     SLOW_PATH_CUCKOO_NS,
     ZIPF_ALPHA,
 )
@@ -31,7 +32,6 @@ from .fairness import credit_vs_gemv_sweep, drr_fairness
 from .hashutil import SplitMix64, pack_key
 from .incast import simulate_attention_incast
 from .metrics import Histogram, percentile, summary
-from .pipeline import recirc_ns
 from .sglang import SGLangEngine
 from .transport import IsolationResult, simulate_noisy_neighbor
 from .workload import ShareGPTWorkload, ZipfSampler
@@ -84,7 +84,7 @@ def occupancy_sweep(
     cap = n_buckets * 4
     n_pages = cap + 512
     for load in loads:
-        tkv = TensorKVAppliance(ApplianceConfig(n_buckets=n_buckets, n_pages=n_pages, store_payloads=False))
+        tkv = TensorKVAppliance(ApplianceConfig(n_buckets=n_buckets, n_pages=n_pages, store_payloads=False, seed=seed))
         target = int(cap * load)
         for i in range(target):
             tkv.put(1, i)
@@ -122,7 +122,7 @@ def occupancy_sweep(
         churn_fast = tkv.table.fast_inserts - fast0
         churn_slow = tkv.table.slow_inserts - slow0
         churn_rate = churn_slow / max(1, churn_fast + churn_slow)
-        extra_ns = (tkv.scoreboard.recirculations - recirc0) * recirc_ns() + churn_slow * (
+        extra_ns = (tkv.scoreboard.recirculations - recirc0) * HAZARD_RECIRC_NS + churn_slow * (
             SLOW_PATH_CUCKOO_NS - FAST_PATH_SRAM_HIT_NS
         )
         ideal_ns = n_ops * FAST_PATH_HBM_HIT_NS
@@ -563,9 +563,17 @@ def run_all() -> dict:
     }
 
 
+def repo_root() -> Path:
+    here = Path(__file__).resolve()
+    for p in here.parents:
+        if (p / "package.json").exists() and (p / "python").is_dir():
+            return p
+    return here.parents[2]
+
+
 def dump_results(path: str | Path | None = None) -> dict:
     result = run_all()
-    target = Path(path) if path else Path(__file__).resolve().parents[2] / "eval" / "results" / "latest.json"
+    target = Path(path) if path else repo_root() / "eval" / "results" / "latest.json"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(result, indent=2, default=str))
     return result

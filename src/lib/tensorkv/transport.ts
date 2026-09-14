@@ -226,7 +226,7 @@ export function simulateNoisyNeighbor(
     if (getRate > 0) {
       let lat: number;
       if (getDrop >= getRate) lat = RTO_MS;
-      else if (inBurst && !usePacing) lat = Math.max(deviceHolMs, deviceHolCapMs * 0.25);
+      else if (inBurst && !usePacing) lat = deviceHolMs > 0 ? deviceHolMs : gatherMs;
       else if (inBurst && usePacing && !useQos) lat = GEMV_SLICE_MS;
       else lat = gatherMs;
       victim.push(lat);

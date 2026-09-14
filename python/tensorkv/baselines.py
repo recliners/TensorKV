@@ -211,10 +211,10 @@ def ttft_sim(
         setup = (TKV_NETWORK_NS + TKV_RMT_NS) / 1e6
         if prefix_hit:
             setup += n_blocks * HANDLE_INSTALL_NS / 1e6
+            compute = COMPUTE_MS_AT_32K * scale
         else:
-            setup += PREFILL_COMPUTE_MS_AT_32K * scale
+            compute = PREFILL_COMPUTE_MS_AT_32K * scale
         fetch = serialize_ms(payload, link_gbps)
-        compute = COMPUTE_MS_AT_32K * scale
     elif path == "host_a100":
         setup = 420.0 * scale
         fetch = serialize_ms(payload, PCIE_GEN4_GBPS)
@@ -466,12 +466,12 @@ def energy_sim(path: str) -> EnergySim:
 def async_put_interference(put_bytes: int = 500_000_000, decode_ms: float = 42.1) -> dict:
     """Table async_interference: 0.5 GB PUT overlapped with decode.
 
-    Isolation transfer of 0.5 GB on 100GbE is ~40 ms serialize; the paper
-    measures ~43 ms. Overlap with 42.1 ms of decode leaves a small exposed
-    tail (measured TBT 43.5 ms, 3.1% throughput drop).
+    Isolation transfer of 0.5 GB on 100GbE is ~40 ms serialize. Overlap with
+    42.1 ms of decode leaves a small exposed tail plus a 0.5 ms copy-engine /
+    PCIe contention leftover.
     """
     serial = serialize_ms(put_bytes, LINK_GBPS)
-    put_ms = serial * (43.0 / serial) if serial else 43.0  # match measured 43 ms at 0.5 GB
+    put_ms = serial
     overlapped = min(decode_ms, put_ms)
     exposed = max(0.0, put_ms - decode_ms)
     tbt = decode_ms + exposed + 0.5  # copy-engine / PCIe contention leftover

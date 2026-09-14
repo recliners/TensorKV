@@ -79,7 +79,13 @@ export function knownAddressUs(path: string) {
   return table[path];
 }
 
-export function ttftSim(path: string, prefixTokens = PREFILL_TOKENS, bytesPerToken = BYTES_PER_TOKEN_LLAMA70B_INT4, linkGbps = LINK_GBPS) {
+export function ttftSim(
+  path: string,
+  prefixTokens = PREFILL_TOKENS,
+  bytesPerToken = BYTES_PER_TOKEN_LLAMA70B_INT4,
+  linkGbps = LINK_GBPS,
+  prefixHit = true,
+) {
   const payload = prefixTokens * bytesPerToken;
   const nBlocks = Math.max(1, Math.ceil(prefixTokens / TOKENS_PER_BLOCK));
   const scale = prefixTokens / PREFILL_TOKENS;
@@ -91,9 +97,14 @@ export function ttftSim(path: string, prefixTokens = PREFILL_TOKENS, bytesPerTok
   let fetch = 0;
   let compute = 15 * scale;
   if (path === "tensorkv") {
-    setup = (TKV_NETWORK_NS + TKV_RMT_NS) / 1e6 + nBlocks * HANDLE_INSTALL_NS / 1e6;
+    setup = (TKV_NETWORK_NS + TKV_RMT_NS) / 1e6;
+    if (prefixHit) {
+      setup += (nBlocks * HANDLE_INSTALL_NS) / 1e6;
+      compute = COMPUTE_MS_AT_32K * scale;
+    } else {
+      compute = PREFILL_COMPUTE_MS_AT_32K * scale;
+    }
     fetch = serializeMs(payload, linkGbps);
-    compute = COMPUTE_MS_AT_32K * scale;
   } else if (path === "host_a100") {
     setup = 420 * scale;
     fetch = serializeMs(payload, PCIE_GEN4_GBPS);

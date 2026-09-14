@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { SiteShell } from "@/components/site-shell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -12,27 +12,30 @@ const SLOW = ["Allocator", "Cuckoo 回插", "Evict + 影子行提交"];
 export default function ArchitecturePage() {
   const [cursor, setCursor] = useState(0);
   const [path, setPath] = useState<"fast" | "slow">("fast");
+  const timer = useRef<number | null>(null);
 
-  const playGet = () => {
-    setPath("fast");
+  useEffect(() => {
+    return () => {
+      if (timer.current !== null) window.clearInterval(timer.current);
+    };
+  }, []);
+
+  const play = (next: "fast" | "slow", len: number, ms: number) => {
+    if (timer.current !== null) window.clearInterval(timer.current);
+    setPath(next);
     setCursor(0);
     let i = 0;
-    const id = setInterval(() => {
+    timer.current = window.setInterval(() => {
       i += 1;
       setCursor(i);
-      if (i >= FAST.length) clearInterval(id);
-    }, 420);
+      if (i >= len && timer.current !== null) {
+        window.clearInterval(timer.current);
+        timer.current = null;
+      }
+    }, ms);
   };
-  const playPutCollision = () => {
-    setPath("slow");
-    setCursor(0);
-    let i = 0;
-    const id = setInterval(() => {
-      i += 1;
-      setCursor(i);
-      if (i >= SLOW.length) clearInterval(id);
-    }, 520);
-  };
+  const playGet = () => play("fast", FAST.length, 420);
+  const playPutCollision = () => play("slow", SLOW.length, 520);
 
   return (
     <SiteShell>
@@ -66,7 +69,7 @@ export default function ArchitecturePage() {
               </div>
             ))}
             <p className="text-xs text-muted-foreground">
-              每桶 4 个 64-bit 槽：32-bit 指纹 + 32-bit 物理指针。全键只在指纹碰撞时去 HBM 校验。
+              每桶 4 个 64-bit 槽：32-bit 指纹 + 32-bit 物理指针。指纹命中后必须去 HBM 读全键核对，碰撞只是其中一种失败情况。
             </p>
           </CardContent>
         </Card>

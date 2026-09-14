@@ -26,7 +26,7 @@ from .constants import (
 from .crossbar import AtomicCrossbar
 from .cuckoo import CuckooTable
 from .eviction import BlockMeta, EvictionTracker
-from .hashutil import pack_key, unpack_key
+from .hashutil import SplitMix64, pack_key, unpack_key
 from .hbm import BankedHBM
 from .pipeline import dma_descriptor_ns, recirc_ns, rmt_lookup_ns
 from .prefix import PrefixIndex, PrefixRecord
@@ -92,7 +92,7 @@ class ApplianceConfig:
     n_pages: int = 4096
     block_size: int = BLOCK_SIZE_BYTES
     store_payloads: bool = True
-    seed: int = 0xC0FFEE
+    seed: int = 0xA5A5
     fast_slow_split: bool = True
     zero_copy_dma: bool = True
 
@@ -100,7 +100,7 @@ class ApplianceConfig:
 class TensorKVAppliance:
     def __init__(self, cfg: ApplianceConfig | None = None) -> None:
         self.cfg = cfg or ApplianceConfig()
-        self.table = CuckooTable(n_buckets=self.cfg.n_buckets)
+        self.table = CuckooTable(n_buckets=self.cfg.n_buckets, rng=SplitMix64(self.cfg.seed))
         self.allocator = HierarchicalAllocator(self.cfg.n_pages)
         self.scoreboard = Scoreboard()
         self.prefix = PrefixIndex()
@@ -324,7 +324,6 @@ class TensorKVAppliance:
 
         for bid in rec.block_ids:
             key = pack_key(rec.context_id, bid)
-            self.eviction.bump_refcount([key], 0)  # keep
             self.eviction.set_refcount(key, rec.refcount)
             self.eviction.touch(key, prefix=True, prefix_hash=prompt_hash)
         events.append(

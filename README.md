@@ -61,7 +61,7 @@ PYTHONPATH=python python3 -m tensorkv baselines
 - `/architecture` 双路径与一致性互锁
 - `/engine` 共享前缀的推理控制流
 - `/isolation` 吵闹邻居：FIFO / 仅 QoS / 仅整形 / 两者
-- `/experiments` 占用、LFRU 洪水、隔离四档、Scatter-Gather、单调读
+- `/experiments` 占用、LFRU 洪水、ShareGPT、GET 直方图、隔离四档、Scatter-Gather、单调读
 - `/baselines` TTFT/TBT、DPU、带宽、MoE、消融、能量、incast
 
 ## 测试床现象（本机快照）

@@ -17,7 +17,7 @@ const PRIMITIVES = [
     op: "TKV_GET",
     title: "向量化 Scatter-Gather",
     point: "一次事务多块",
-    body: "一次请求携带 BlockID 列表。流水线并行查指纹，DMA 把非连续页拼成连续流，避免逐块指针追逐。",
+    body: "一次请求携带 BlockID 列表。流水线按指纹匹配后去 HBM 核对全键，DMA 把非连续页拼成连续流。",
   },
   {
     op: "TKV_PROBE",
@@ -83,8 +83,7 @@ export default function HomePage() {
             </p>
             <p>
               <span className="font-medium text-accent">不能做：</span>
-              无法写入你本机的 <code className="rounded bg-muted px-1">C:\\Users\\...\\Desktop\\project</code>
-              （当前环境是云端 Linux 仓库）。也无法在没有 Alveo U280 / A100 的情况下测到 92.8 Gbps 与端到端墙钟毫秒数。
+              无法在没有 Alveo U280 / A100 的情况下测到 92.8 Gbps 与端到端墙钟毫秒数。本仓库跑的是器件/网络模型，不是 FPGA 比特流。
             </p>
           </CardContent>
         </Card>
