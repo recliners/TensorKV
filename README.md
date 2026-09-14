@@ -66,13 +66,14 @@ PYTHONPATH=python python3 -m tensorkv baselines
 
 ## 测试床现象（本机快照）
 
-`eval/results/latest.json` 由 `python -m tensorkv report` 写出。当前一轮测→改→再测后的可见差距：
+`eval/results/latest.json` 由 `python -m tensorkv report` 写出。当前一轮自查修复后再测的可见差距：
 
-- **占用** 50%→95%：填充慢路径 0.5%→12%，换入慢路径 1.7%→67%，cuckoo kick 19→6693，吞吐保持 99%→69%，victim buffer 在 95% 出现。
+- **占用** 50%→95%：填充慢路径 0.5%→12%，换入慢路径 1.8%→68%，cuckoo kick 26→6297，吞吐保持 99%→69%，victim buffer 在 90% 出现、95% 有 44 条。
 - **LFRU 洪水**（先 PROBE 再插入 unique、期间不碰前缀）：60% 容量前缀存活 LRU 30% / LFRU 100%；80% 为 65% / 100%。加权 TTFT 约 919 ms vs 263 ms。
+- **ShareGPT 多前缀**：60% 容量前缀存活 LRU 17% / LFRU 100%（差 83 个百分点）。
 - **隔离** 干扰段 P99：FIFO 200 ms（RTO） / QoS 40 ms（写引擎 HOL） / 整形 15 ms（GEMV 片） / 两者 3.5 ms（credit gather）。
-- **32K 前缀 TTFT**：miss 路径 compute 1200 ms，hit 路径 setup 18 ms + compute 15 ms；缺口是重算 vs 句柄安装，不是贴表。
-- **GET 延迟**：快路径 P50 ≈ 3.0 µs，混合 gather/miss/hazard 后 P99 ≈ 6.3 µs；关掉快慢分流后 P50 ≈ 13 µs。
+- **32K 前缀 TTFT**（100GbE fetch）：miss = compute 1200 ms + fetch 215 ms ≈ 1415 ms；hit = setup 18 ms + fetch 215 ms + compute 15 ms ≈ 248 ms；缺口 1167 ms 来自重算 vs 句柄安装，两边 fetch 一样。
+- **GET 延迟**：快路径 P50 ≈ 3.0 µs，混合 gather/miss/hazard 后 P99 ≈ 6.3 µs；关掉快慢分流后 P50 ≈ 13.2 µs。
 - **DRR**：四租户 Jain = 1.0；incast 爆破丢包、40 Gbps credit 为 0；credit 超过 GEMV 时 GPU RX 开始积压。
 
 ## 设计要点
