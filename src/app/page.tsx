@@ -36,9 +36,10 @@ const PRIMITIVES = [
 const MAP = [
   { paper: "§ Dual-Path / RMT", code: "CuckooTable + 快路径 GET/PROBE" },
   { paper: "§ Slow Path 分配器", code: "HierarchicalAllocator（FIFO×64）" },
-  { paper: "§ Consistency", code: "Scoreboard 危险位 + 再循环" },
+  { paper: "§ Consistency", code: "Scoreboard 危险位 + 再循环（不读 payload）" },
   { paper: "§ Prefix-Aware LFRU", code: "EvictionTracker（refcount>1 保护）" },
   { paper: "§ Credit + VOQ/DRR", code: "CreditShaper / VirtualOutputQueues" },
+  { paper: "§ Crossbar commit", code: "AtomicCrossbar 1 周期 bank lock" },
 ];
 
 export default function HomePage() {

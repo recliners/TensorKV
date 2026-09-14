@@ -117,17 +117,21 @@ def monotonic_race() -> dict:
     tkv.put(3, 9, marker)
     tkv.begin_evict_key(3, 9)
     mid = tkv.get(3, [9])
-    recirculated = mid.recirculations > 0 or 9 in mid.misses
+    during_payload = mid.payload
+    recirculated = mid.recirculations > 0
+    missed_during = 9 in mid.misses
     tkv.complete_evict_key(3, 9)
     after = tkv.get(3, [9])
-    # Recycle the page into a new block and ensure old GET cannot observe it.
     tkv.put(3, 10, b"NEWDATA" + bytes(57))
-    stale = marker[:7] in after.payload
+    stale = marker[:7] in after.payload or marker[:7] in during_payload
     return {
-        "recirculated_or_miss_during_hazard": recirculated,
+        "recirculated_or_miss_during_hazard": recirculated or missed_during,
+        "recirculated": recirculated,
+        "miss_during_hazard": missed_during,
+        "no_payload_during_hazard": marker[:7] not in during_payload,
         "post_evict_miss": 9 in after.misses,
         "stale_read": stale,
-        "monotonic": (not stale) and (9 in after.misses),
+        "monotonic": (not stale) and (9 in after.misses) and missed_during and recirculated,
     }
 
 
@@ -147,8 +151,18 @@ def prefix_activation() -> dict:
         "skipped_tokens": engine.stats.skipped_prefill_tokens,
         "paper_setup_ms_on_hit": 18,
         "paper_recompute_ms": 1218,
-        "first_ttft_ms": round(first.ttft_ms, 2),
-        "second_ttft_ms": round(second.ttft_ms, 2),
+        "first_ttft_ms": round(first.ttft_ms, 6),
+        "second_ttft_ms": round(second.ttft_ms, 6),
+        "first_ttft_parts": {
+            "setup": round(first.ttft_setup_ms, 6),
+            "fetch": round(first.ttft_fetch_ms, 6),
+            "compute": round(first.ttft_compute_ms, 6),
+        },
+        "second_ttft_parts": {
+            "setup": round(second.ttft_setup_ms, 6),
+            "fetch": round(second.ttft_fetch_ms, 6),
+            "compute": round(second.ttft_compute_ms, 6),
+        },
     }
 
 
@@ -212,11 +226,19 @@ def eviction_sensitivity(capacity_fracs: tuple[float, ...] = (0.6, 0.8), seed: i
     return results
 
 
-def isolation_experiment() -> dict[str, IsolationResult]:
-    return {
-        p: simulate_noisy_neighbor(p)
-        for p in ("fifo", "qos", "pacing", "both")
-    }
+def isolation_experiment(
+    duration_s: float = 30.0,
+    tick_us: float = 50.0,
+    interference_start_s: float = 10.0,
+    interference_end_s: float = 20.0,
+) -> dict[str, IsolationResult]:
+    kw = dict(
+        duration_s=duration_s,
+        tick_us=tick_us,
+        interference_start_s=interference_start_s,
+        interference_end_s=interference_end_s,
+    )
+    return {p: simulate_noisy_neighbor(p, **kw) for p in ("fifo", "qos", "pacing", "both")}
 
 
 def paper_reference_tables() -> dict:
@@ -237,7 +259,8 @@ def run_all() -> dict:
                 "p50": round(v.p50, 2),
                 "p99": round(v.p99, 2),
                 "drops": v.drops,
-                "interference_p99": round(v.interference_p99, 2),
+                "interference_p99": round(v.interference_p99, 4),
+                "series_points": len(v.series),
             }
             for k, v in iso.items()
         },

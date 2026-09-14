@@ -1,15 +1,43 @@
-import { DRR_QUANTUM_BYTES, SplitMix64 } from "./types";
+import {
+  DEFAULT_CREDIT_GBPS,
+  DRR_QUANTUM_BYTES,
+  FAST_PATH_HBM_HIT_NS,
+  HIGH_PRIORITY_OPCODES,
+  LINK_GBPS,
+} from "./types";
 
 export type Packet = {
   readyAt: number;
-  opcode: "GET" | "PROBE" | "PUT";
+  opcode: string;
   contextId: number;
   size: number;
   seq: number;
   tenant: string;
 };
 
-const HIGH = new Set(["GET", "PROBE"]);
+export class CreditShaper {
+  rateGbps: number;
+  nextFree = 0;
+  packetsShaped = 0;
+
+  constructor(defaultGbps = LINK_GBPS) {
+    this.rateGbps = defaultGbps;
+  }
+
+  setCredit(gbps: number) {
+    this.rateGbps = Math.max(0.1, gbps);
+  }
+
+  transmit(sizeBytes: number, now: number, paced = true): [number, number] {
+    const bits = sizeBytes * 8;
+    const durationUs = bits / (this.rateGbps * 1e3);
+    const start = paced ? Math.max(now, this.nextFree) : now;
+    const end = start + durationUs;
+    this.nextFree = paced ? end : now;
+    this.packetsShaped++;
+    return [start, end];
+  }
+}
 
 export class VirtualOutputQueues {
   quantum: number;
@@ -19,6 +47,7 @@ export class VirtualOutputQueues {
   deficitLow = new Map<number, number>();
   highRr: number[] = [];
   lowRr: number[] = [];
+  enqueued = 0;
   dequeuedHigh = 0;
   dequeuedLow = 0;
   preemptions = 0;
@@ -28,13 +57,14 @@ export class VirtualOutputQueues {
   }
 
   enqueue(pkt: Packet) {
-    const isHigh = HIGH.has(pkt.opcode);
+    const isHigh = HIGH_PRIORITY_OPCODES.has(pkt.opcode);
     const table = isHigh ? this.high : this.low;
     const rr = isHigh ? this.highRr : this.lowRr;
     const q = table.get(pkt.contextId) ?? [];
     if (!q.length && !rr.includes(pkt.contextId)) rr.push(pkt.contextId);
     q.push(pkt);
     table.set(pkt.contextId, q);
+    this.enqueued++;
   }
 
   private drrPop(
@@ -100,6 +130,14 @@ export type IsolationResult = {
   interferenceP99: number;
 };
 
+const PKT_BYTES = 4096;
+const RTO_MS = 200;
+
+function packetsPerTick(gbps: number, tickUs: number, pktBytes = PKT_BYTES) {
+  const bytesPerUs = (gbps * 1e9) / 8 / 1e6;
+  return (bytesPerUs * tickUs) / pktBytes;
+}
+
 function percentile(xs: number[], p: number) {
   if (!xs.length) return 0;
   const ys = [...xs].sort((a, b) => a - b);
@@ -110,70 +148,56 @@ function percentile(xs: number[], p: number) {
 export function simulateNoisyNeighbor(
   policy: "fifo" | "qos" | "pacing" | "both",
   durationS = 30,
-  tickMs = 50,
+  tickUs = 50,
+  interferenceStartS = 10,
+  interferenceEndS = 20,
+  switchBufferPackets = 32,
+  creditGbps = DEFAULT_CREDIT_GBPS,
+  getPeriodUs = 100,
+  linkGbps = LINK_GBPS,
 ): IsolationResult {
-  const rng = new SplitMix64(7n);
-  const nTicks = Math.floor((durationS * 1000) / tickMs);
-  const startI = Math.floor((10 * 1000) / tickMs);
-  const endI = Math.floor((20 * 1000) / tickMs);
-  const switchBuf = 32;
-  const buffer: string[] = [];
+  const useQos = policy === "qos" || policy === "both";
+  const usePacing = policy === "pacing" || policy === "both";
+  const cap = packetsPerTick(linkGbps, tickUs);
+  const paced = packetsPerTick(creditGbps, tickUs);
+  const nTicks = Math.floor((durationS * 1e6) / tickUs);
+  const startI = Math.floor((interferenceStartS * 1e6) / tickUs);
+  const endI = Math.floor((interferenceEndS * 1e6) / tickUs);
+  const getEvery = Math.max(1, Math.round(getPeriodUs / tickUs));
+
+  let switchQ = 0;
   let drops = 0;
   const victim: number[] = [];
   const interference: number[] = [];
   const series: IsolationPoint[] = [];
-  const voq = new VirtualOutputQueues();
-  let seq = 0;
-
-  const useQos = policy === "qos" || policy === "both";
-  const usePacing = policy === "pacing" || policy === "both";
+  const serial = (PKT_BYTES * 8) / (linkGbps * 1e6);
+  const sampleEvery = Math.max(1, Math.floor(nTicks / 400));
 
   for (let t = 0; t < nTicks; t++) {
-    const nowMs = t * tickMs;
     const inBurst = t >= startI && t < endI;
-    seq++;
-    const getPkt: Packet = { readyAt: nowMs, opcode: "GET", contextId: 1, size: 4096, seq, tenant: "A" };
-    const arrivals: Packet[] = [getPkt];
-    if (inBurst) {
-      const nPuts = usePacing ? 8 : 24;
-      for (let i = 0; i < nPuts; i++) {
-        seq++;
-        arrivals.push({ readyAt: nowMs, opcode: "PUT", contextId: 2, size: 4096, seq, tenant: "B" });
+    const putRate = inBurst ? (usePacing ? paced : cap) : 0;
+    const getRate = t % getEvery === 0 ? 1 : 0;
+    const offered = putRate + getRate;
+    const slack = cap + (switchBufferPackets - switchQ);
+    const overflow = Math.max(0, offered - slack);
+    const admitted = offered - overflow;
+    switchQ = Math.min(switchBufferPackets, Math.max(0, switchQ + admitted - cap));
+    drops += overflow;
+    const getDrop = overflow > 0 ? Math.min(getRate, overflow) : 0;
+
+    if (getRate > 0) {
+      let lat: number;
+      if (getDrop >= getRate) lat = RTO_MS;
+      else {
+        const holMs = useQos ? 0 : putRate * (FAST_PATH_HBM_HIT_NS / 1e6);
+        lat = serial + holMs;
       }
+      victim.push(lat);
+      if (inBurst) interference.push(lat);
     }
-    let ordered = arrivals;
-    if (useQos) {
-      for (const p of arrivals) voq.enqueue(p);
-      ordered = [];
-      while (voq.pending()) {
-        const n = voq.dequeue();
-        if (!n) break;
-        ordered.push(n);
-      }
+    if (t % sampleEvery === 0) {
+      series.push({ t: (t * tickUs) / 1e6, latency: victim.length ? victim[victim.length - 1] : serial });
     }
-    for (const p of ordered) {
-      if (buffer.length >= switchBuf) {
-        drops++;
-        if (p.opcode === "GET") {
-          const extra = 180 + rng.nextFloat() * 40;
-          victim.push(extra);
-          if (inBurst) interference.push(extra);
-        }
-        continue;
-      }
-      buffer.push(p.opcode);
-    }
-    const drain = usePacing || useQos ? 2 : 1;
-    for (let i = 0; i < drain; i++) buffer.shift();
-    const qDepth = buffer.length;
-    let lat: number;
-    if (policy === "fifo") lat = 2 + qDepth * 6 + (inBurst ? 8 : 0);
-    else if (policy === "qos") lat = 2 + Math.min(qDepth, 4) * 2 + (inBurst ? 12 + rng.nextFloat() * 20 : 0);
-    else if (policy === "pacing") lat = 2 + qDepth * 0.8 + (inBurst ? 10 + rng.nextFloat() * 4 : 0);
-    else lat = 2 + (inBurst ? 1.2 + rng.nextFloat() * 0.4 : 0);
-    victim.push(lat);
-    if (inBurst) interference.push(lat);
-    series.push({ t: nowMs / 1000, latency: lat });
   }
 
   return {
@@ -181,7 +205,7 @@ export function simulateNoisyNeighbor(
     series,
     p50: percentile(victim, 50),
     p99: percentile(victim, 99),
-    drops,
-    interferenceP99: percentile(interference, 99),
+    drops: Math.trunc(drops),
+    interferenceP99: percentile(interference.length ? interference : victim, 99),
   };
 }

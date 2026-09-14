@@ -37,6 +37,7 @@ BLOOM_HASHES = 3
 
 # Dual-path timing model (paper microbenchmarks / recirculation analysis).
 FPGA_CLOCK_HZ = 250_000_000
+FPGA_CYCLE_NS = 4  # 250 MHz
 FAST_PATH_SRAM_HIT_NS = 2_150
 FAST_PATH_HBM_HIT_NS = 2_420
 RMT_LOOKUP_NS = 150
@@ -44,6 +45,9 @@ CROSSBAR_NOC_CYCLES = 20
 ATOMIC_COMMIT_CYCLES = 1
 HAZARD_RECIRC_NS = 80
 SLOW_PATH_CUCKOO_NS = 12_400  # ablation: w/o fast-slow split, GET P99 ~ 12.4 us
+# Paper: 32K-token kernel compute ≈ 15 ms after KV is resident.
+PAPER_COMPUTE_MS_AT_32K = 15.0
+PAPER_PREFILL_TOKENS = 32_000
 
 # Prototype capacity.
 HBM_CAPACITY_BYTES = 8 * 1024 * 1024 * 1024  # 8 GiB U280
@@ -51,6 +55,7 @@ LOCAL_KV_POOL_BYTES = 32 * 1024 * 1024 * 1024  # ~32 GB usable KV on A100 after 
 
 # Transport.
 LINK_GBPS = 100.0
+DEFAULT_CREDIT_GBPS = 40.0  # GET credit matched to GEMV drain (paper)
 HIGH_PRIORITY_OPCODES = frozenset({"GET", "PROBE"})
 LOW_PRIORITY_OPCODES = frozenset({"PUT"})
 DRR_QUANTUM_BYTES = 16_384

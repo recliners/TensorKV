@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT))
 
 from tensorkv.appliance import ApplianceConfig, TensorKVAppliance
 from tensorkv.bloom import BloomFilter
+from tensorkv.crossbar import AtomicCrossbar
 from tensorkv.cuckoo import CuckooTable
 from tensorkv.engine import PagedEngine
 from tensorkv.experiments import monotonic_race, occupancy_sweep, prefix_activation, scatter_gather_rtts
@@ -78,18 +79,32 @@ class TestConsistency(unittest.TestCase):
         self.assertTrue(result["monotonic"])
         self.assertTrue(result["post_evict_miss"])
         self.assertFalse(result["stale_read"])
+        self.assertTrue(result["no_payload_during_hazard"])
 
     def test_reallocated_page_not_visible(self) -> None:
         tkv = TensorKVAppliance(ApplianceConfig(n_pages=2, n_buckets=8, block_size=16))
         tkv.put(1, 0, b"OLD")
         tkv.begin_evict_key(1, 0)
         during = tkv.get(1, [0])
-        self.assertTrue(during.recirculations > 0 or 0 in during.misses)
+        self.assertGreater(during.recirculations, 0)
+        self.assertIn(0, during.misses)
+        self.assertNotIn(b"OLD", during.payload)
+        self.assertFalse(during.ok)
         tkv.complete_evict_key(1, 0)
         tkv.put(1, 1, b"NEW")
         after = tkv.get(1, [0])
         self.assertIn(0, after.misses)
         self.assertNotIn(b"OLD", after.payload)
+        self.assertIn(b"NEW", tkv.get(1, [1]).payload)
+
+    def test_monotonic_read_requires_recirc_and_miss(self) -> None:
+        result = monotonic_race()
+        self.assertTrue(result["monotonic"])
+        self.assertTrue(result["recirculated"])
+        self.assertTrue(result["miss_during_hazard"])
+        self.assertTrue(result["no_payload_during_hazard"])
+        self.assertTrue(result["post_evict_miss"])
+        self.assertFalse(result["stale_read"])
 
 
 class TestCuckooAndBloom(unittest.TestCase):
@@ -104,6 +119,13 @@ class TestCuckooAndBloom(unittest.TestCase):
         self.assertEqual(table.size, ok)
         self.assertLess(table.slow_inserts / ok, 0.2)
         self.assertIsNotNone(table.lookup(pack_key(1, 0)))
+        self.assertGreater(table.hbm_key_verifies, 0)
+
+    def test_fingerprint_collision_checks_full_key(self) -> None:
+        table = CuckooTable(n_buckets=8)
+        table.insert(pack_key(1, 0), 10)
+        table.lookup(pack_key(1, 0))
+        self.assertGreaterEqual(table.hbm_key_verifies, 1)
 
     def test_fingerprint_nonzero(self) -> None:
         for i in range(1000):
@@ -159,9 +181,31 @@ class TestTransport(unittest.TestCase):
         self.assertGreaterEqual(voq.preemptions, 1)
 
     def test_isolation_ranking(self) -> None:
-        fifo = simulate_noisy_neighbor("fifo")
-        both = simulate_noisy_neighbor("both")
+        kw = dict(duration_s=4.0, tick_us=50.0, interference_start_s=1.0, interference_end_s=3.0)
+        fifo = simulate_noisy_neighbor("fifo", **kw)
+        qos = simulate_noisy_neighbor("qos", **kw)
+        pacing = simulate_noisy_neighbor("pacing", **kw)
+        both = simulate_noisy_neighbor("both", **kw)
         self.assertGreater(fifo.interference_p99, both.interference_p99)
+        self.assertGreater(qos.interference_p99, both.interference_p99)
+        self.assertGreater(fifo.drops, both.drops)
+        self.assertLess(pacing.interference_p99, fifo.interference_p99)
+        self.assertLessEqual(both.interference_p99, pacing.interference_p99)
+
+    def test_voq_used_by_appliance(self) -> None:
+        tkv = TensorKVAppliance(ApplianceConfig(n_pages=16, n_buckets=8, block_size=32))
+        tkv.put(1, 0, b"x")
+        tkv.get(1, [0])
+        self.assertGreater(tkv.voq.dequeued_low + tkv.voq.dequeued_high, 0)
+
+    def test_crossbar_stalls_lookup_during_commit(self) -> None:
+        xb = AtomicCrossbar()
+        xb.commit()
+        stall = xb.lookup_gate()
+        self.assertGreaterEqual(stall, 4)
+        self.assertEqual(xb.lookup_stalls, 1)
+        xb.release()
+        self.assertEqual(xb.lookup_gate(), 0)
 
 
 class TestLibTkvAndEngine(unittest.TestCase):
@@ -180,6 +224,8 @@ class TestLibTkvAndEngine(unittest.TestCase):
         self.assertFalse(result["first_prefix_hit"])
         self.assertTrue(result["second_prefix_hit"])
         self.assertGreater(result["skipped_tokens"], 0)
+        self.assertLess(result["second_ttft_ms"], 18.0)
+        self.assertGreater(result["second_ttft_parts"]["fetch"], 0.0)
 
     def test_scatter_gather_one_rtt(self) -> None:
         r = scatter_gather_rtts(6)

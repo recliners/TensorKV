@@ -10,9 +10,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .constants import TOKENS_PER_BLOCK
+from .constants import DEFAULT_CREDIT_GBPS, TOKENS_PER_BLOCK
 from .hashutil import mix64
 from .libtkv import TensorKVContext
+from .timing import attention_compute_ms, serialize_ms, ttft_breakdown
 
 
 def prompt_hash(tokens: list[int]) -> int:
@@ -33,6 +34,9 @@ class Request:
     prefix_hit: bool = False
     generated: int = 0
     ttft_ms: float = 0.0
+    ttft_setup_ms: float = 0.0
+    ttft_fetch_ms: float = 0.0
+    ttft_compute_ms: float = 0.0
     tbt_ms: list[float] = field(default_factory=list)
 
 
@@ -65,14 +69,14 @@ class PagedEngine:
         self._next_ctx += 1
         req = Request(req_id=req_id, tokens=list(tokens), context_id=ctx_id)
 
-        setup_ms = 2.0
-        fetch_ms = 0.0
-        compute_ms = 0.0
+        probe_ns = 0
+        local_tokens = len(tokens)
 
         prefix = prefix_tokens or []
         if prefix:
             ph = prompt_hash(prefix)
             probe = self.tkv.probe(ph)
+            probe_ns = probe.latency_ns
             req.prefix_len = len(prefix)
             if probe.hit and probe.context_id is not None:
                 req.prefix_hit = True
@@ -80,28 +84,37 @@ class PagedEngine:
                 req.prefix_blocks = list(probe.handles)
                 self.stats.prefix_hits += 1
                 self.stats.skipped_prefill_tokens += len(prefix)
-                setup_ms = 18.0  # paper: prefix-activation setup
                 suffix = tokens[len(prefix) :]
                 req.tokens = list(prefix) + list(suffix)
+                local_tokens = len(suffix)
                 for i, chunk in enumerate(_chunks(suffix, self.tpb)):
                     data = bytes((b & 0xFF) for b in chunk)
                     self.tkv.put_async(req.context_id, i, data)
                     self.stats.bytes_put += self.tkv.device.cfg.block_size
-                compute_ms = 15.0
             else:
                 self.stats.prefix_misses += 1
-                compute_ms = 15.0 + 0.03 * len(prefix)  # local prefill cost (scaled)
+                local_tokens = len(tokens)
                 self._materialize(req, tokens, ph)
-                setup_ms = 18.0
         else:
             self._materialize(req, tokens, None)
-            compute_ms = 15.0 + 0.03 * len(tokens)
+            local_tokens = len(tokens)
 
         self.stats.prefills += 1
         fetch = self._gather(req)
-        fetch_ms = 0.02 * max(1, fetch.gathered_bytes / 4096)
         self.stats.bytes_get += fetch.gathered_bytes
-        req.ttft_ms = setup_ms + fetch_ms + compute_ms
+        parts = ttft_breakdown(
+            prefix_hit=req.prefix_hit,
+            prefix_tokens=req.prefix_len,
+            local_tokens=local_tokens,
+            gathered_bytes=fetch.gathered_bytes,
+            get_latency_ns=fetch.latency_ns,
+            probe_latency_ns=probe_ns,
+            credit_gbps=DEFAULT_CREDIT_GBPS,
+        )
+        req.ttft_ms = parts.total_ms
+        req.ttft_setup_ms = parts.setup_ms
+        req.ttft_fetch_ms = parts.fetch_ms
+        req.ttft_compute_ms = parts.compute_ms
         self.requests[req_id] = req
         return req
 
@@ -150,8 +163,7 @@ class PagedEngine:
         req = self.requests[req_id]
         gathered = self._gather(req)
         self.stats.bytes_get += gathered.gathered_bytes
-        n_blocks = self._n_blocks(len(req.tokens))
-        tbt = 0.01 * max(1, n_blocks) + 10.0  # gather + dense attention stub
+        tbt = serialize_ms(gathered.gathered_bytes, DEFAULT_CREDIT_GBPS) + attention_compute_ms(len(req.tokens)) * 0.2
         req.tokens.append(new_token)
         req.generated += 1
         suffix_len = len(req.tokens) - req.prefix_len

@@ -5,11 +5,14 @@ import {
   PrefixIndex,
   Scoreboard,
 } from "./core";
+import { AtomicCrossbar } from "./crossbar";
+import { CreditShaper, VirtualOutputQueues } from "./transport";
 import {
   BLOCK_SIZE_BYTES,
   FAST_PATH_HBM_HIT_NS,
   FAST_PATH_SRAM_HIT_NS,
   HAZARD_RECIRC_NS,
+  HIGH_PRIORITY_OPCODES,
   RMT_LOOKUP_NS,
   SLOW_PATH_CUCKOO_NS,
   packKey,
@@ -63,6 +66,9 @@ export class TensorKVAppliance {
   scoreboard = new Scoreboard();
   prefix = new PrefixIndex();
   eviction = new EvictionTracker();
+  shaper = new CreditShaper();
+  voq = new VirtualOutputQueues();
+  crossbar = new AtomicCrossbar();
   hbm: (Uint8Array | null)[];
   contexts = new Map<number, number[]>();
   inflightEvict = new Set<string>();
@@ -118,6 +124,7 @@ export class TensorKVAppliance {
     });
     this.hbm[page] = this.pad(data ?? new Uint8Array([seqId & 0xff]));
     events.push({ op: "PUT", path: "fast", stage: "dma_write", detail: `HBM[${page}] ${this.cfg.blockSize}B`, latency_ns: 80 });
+    const stall = this.crossbar.lookupGate();
     const path = this.table.insert(key, page);
     const latency = path === "fast" ? FAST_PATH_SRAM_HIT_NS : SLOW_PATH_CUCKOO_NS;
     events.push({
@@ -125,11 +132,13 @@ export class TensorKVAppliance {
       path,
       stage: "hash_insert",
       detail: `cuckoo=${path} load=${this.table.loadFactor.toFixed(3)}`,
-      latency_ns: latency,
+      latency_ns: latency + stall,
     });
     if (path === "slow") {
+      const commitNs = this.crossbar.commit();
+      this.crossbar.release();
       this.shadowCommits++;
-      events.push({ op: "PUT", path: "slow", stage: "crossbar", detail: "atomic shadow-row commit", latency_ns: 80 });
+      events.push({ op: "PUT", path: "slow", stage: "crossbar", detail: "atomic shadow-row commit", latency_ns: commitNs });
     }
     const chain = this.contexts.get(contextId) ?? [];
     chain.push(seqId);
@@ -145,6 +154,7 @@ export class TensorKVAppliance {
       isPrefix: prefixHash !== undefined,
       prefixHash: prefixHash ?? null,
     });
+    this.schedule("PUT", contextId, this.cfg.blockSize);
     return { ok: true, contextId, blockId: seqId, phys: page, path, events, latencyNs: events.reduce((s, e) => s + e.latency_ns, 0) };
   }
 
@@ -169,10 +179,15 @@ export class TensorKVAppliance {
     let latency = RMT_LOOKUP_NS;
     for (const bid of blockIds) {
       const key = packKey(contextId, bid);
+      const stall = this.crossbar.lookupGate();
+      latency += stall;
       if (this.scoreboard.isHazard(key) || this.inflightEvict.has(key.toString())) {
         recirc++;
         events.push({ op: "GET", path: "fast", stage: "scoreboard", detail: `hazard block ${bid} recirculate`, latency_ns: HAZARD_RECIRC_NS });
         latency += HAZARD_RECIRC_NS;
+        misses.push(bid);
+        events.push({ op: "GET", path: "fast", stage: "lookup", detail: `MISS block ${bid} (hazard, no HBM)`, latency_ns: 0 });
+        continue;
       }
       const phys = this.table.lookup(key);
       const payload = phys !== null ? this.hbm[phys] : null;
@@ -193,6 +208,8 @@ export class TensorKVAppliance {
       detail: `scatter-gather ${hits.length} blocks → contiguous stream`,
       latency_ns: 200,
     });
+    const shapeNs = this.schedule("GET", contextId, Math.max(1, hits.length) * this.cfg.blockSize);
+    latency += shapeNs;
     const totalLen = chunks.reduce((s, c) => s + c.length, 0);
     const payload = new Uint8Array(totalLen);
     let off = 0;
@@ -226,10 +243,12 @@ export class TensorKVAppliance {
     this.probeOps++;
     events.push({ op: "PROBE", path: "fast", stage: "parser", detail: `PROBE(${Number(promptHash & 0xffffffffn)})`, latency_ns: 0 });
     events.push({ op: "PROBE", path: "fast", stage: "bloom", detail: "check prefix bloom filter", latency_ns: 20 });
+    const stall = this.crossbar.lookupGate();
     const rec = this.prefix.probe(promptHash);
     if (!rec) {
-      events.push({ op: "PROBE", path: "fast", stage: "index", detail: "MISS (no HBM access)", latency_ns: FAST_PATH_SRAM_HIT_NS });
-      return { hit: false, handles: [], contextId: null, refcount: 0, events, latencyNs: FAST_PATH_SRAM_HIT_NS, hbmAccessed: false };
+      events.push({ op: "PROBE", path: "fast", stage: "index", detail: "MISS (no HBM access)", latency_ns: FAST_PATH_SRAM_HIT_NS + stall });
+      this.schedule("PROBE", 0, 64);
+      return { hit: false, handles: [], contextId: null, refcount: 0, events, latencyNs: FAST_PATH_SRAM_HIT_NS + stall, hbmAccessed: false };
     }
     for (const bid of rec.blockIds) {
       const key = packKey(rec.contextId, bid);
@@ -243,13 +262,14 @@ export class TensorKVAppliance {
       detail: `HIT handles=${rec.blockIds.length} ref=${rec.refcount} (no HBM)`,
       latency_ns: FAST_PATH_SRAM_HIT_NS,
     });
+    this.schedule("PROBE", rec.contextId, 64);
     return {
       hit: true,
       handles: [...rec.blockIds],
       contextId: rec.contextId,
       refcount: rec.refcount,
       events,
-      latencyNs: FAST_PATH_SRAM_HIT_NS,
+      latencyNs: FAST_PATH_SRAM_HIT_NS + stall,
       hbmAccessed: false,
     };
   }
@@ -298,6 +318,7 @@ export class TensorKVAppliance {
     const key = packKey(contextId, blockId);
     this.scoreboard.setHazard(key);
     this.inflightEvict.add(key.toString());
+    this.crossbar.commit();
   }
 
   completeEvictKey(contextId: number, blockId: number) {
@@ -320,8 +341,11 @@ export class TensorKVAppliance {
     const [ctx, bid] = unpackKey(key);
     if (!hazardAlready) this.scoreboard.setHazard(key);
     events.push({ op: "EVICT", path: "slow", stage: "scoreboard", detail: `lock(${ctx},${bid})`, latency_ns: 20 });
+    const stall = this.crossbar.lookupGate();
     const phys = this.table.delete(key);
-    events.push({ op: "EVICT", path: "slow", stage: "crossbar", detail: "clear map + atomic commit", latency_ns: 80 });
+    const commitNs = this.crossbar.commit();
+    this.crossbar.release();
+    events.push({ op: "EVICT", path: "slow", stage: "crossbar", detail: "clear map + atomic commit", latency_ns: commitNs + stall });
     this.shadowCommits++;
     if (phys !== null) {
       this.hbm[phys] = null;
@@ -340,6 +364,26 @@ export class TensorKVAppliance {
       else this.contexts.delete(ctx);
     }
     this.scoreboard.clearHazard(key);
+    this.schedule("EVICT", ctx, 64);
+  }
+
+  private schedule(opcode: string, contextId: number, size: number): number {
+    this.voq.enqueue({
+      readyAt: this.crossbar.nowNs,
+      opcode,
+      contextId,
+      size: Math.max(1, size),
+      seq: 0,
+      tenant: "",
+    });
+    const pkt = this.voq.dequeue();
+    if (!pkt) return 0;
+    const nowUs = this.crossbar.nowNs / 1000;
+    const paced = HIGH_PRIORITY_OPCODES.has(pkt.opcode);
+    const [, end] = this.shaper.transmit(pkt.size, nowUs, paced);
+    const ns = Math.max(0, Math.trunc((end - nowUs) * 1000));
+    this.crossbar.advance(ns);
+    return ns;
   }
 
   stats() {
@@ -360,6 +404,9 @@ export class TensorKVAppliance {
       hazardRate: Number(this.scoreboard.hazardRate.toFixed(6)),
       recirculations: this.scoreboard.recirculations,
       shadowCommits: this.shadowCommits,
+      crossbarCommits: this.crossbar.commits,
+      lookupStalls: this.crossbar.lookupStalls,
+      hbmKeyVerifies: this.table.hbmKeyVerifies,
       puts: this.putOps,
       gets: this.getOps,
       probes: this.probeOps,
@@ -368,6 +415,9 @@ export class TensorKVAppliance {
       probeMisses: this.prefix.misses,
       gatheredBytes: this.gatheredBytes,
       contexts: this.contexts.size,
+      voqHigh: this.voq.dequeuedHigh,
+      voqLow: this.voq.dequeuedLow,
+      voqPreempt: this.voq.preemptions,
     };
   }
 

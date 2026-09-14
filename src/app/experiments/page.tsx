@@ -45,8 +45,8 @@ export default function ExperimentsPage() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">论文对应实验</h1>
           <p className="mt-2 max-w-3xl text-sm text-muted-foreground">
-            左侧/下方图表分两类：<strong>算法在本机跑出来的功能指标</strong>（命中率、RTT 次数、占用、单调读），以及
-            <strong>论文 A100/FPGA 实测数字</strong>（仅作对照，本环境没有那套硬件）。
+            左侧/下方图表分两类：<strong>算法在本机跑出来的功能指标</strong>（命中率、RTT 次数、占用、单调读、由链路/缓冲推出的隔离延迟），以及
+            <strong>论文 A100/FPGA 实测数字</strong>（仅作对照，本环境没有那套硬件）。引擎 TTFT 按 100 GbE 串行化、40 Gbps 信用和 32K/15 ms 算力比例缩放，不再写死 18 ms。
           </p>
         </div>
         <Button onClick={run} disabled={running}>
@@ -126,7 +126,7 @@ export default function ExperimentsPage() {
                 拼接校验：{data.scatterGather.gatheredOk ? "通过" : "失败"}。
               </p>
               <p>
-                GET∥EVICT 竞态：再循环 {String(data.monotonic.recirculated)}，回收后 Miss {String(data.monotonic.postEvictMiss)}，脏读 {String(data.monotonic.staleRead)}，单调性 {data.monotonic.monotonic ? "成立" : "失败"}。
+                GET∥EVICT 竞态：再循环 {String(data.monotonic.recirculated)}，危险期 Miss {String(data.monotonic.missDuring)}，危险期无旧载荷 {String(data.monotonic.noPayloadDuring)}，回收后 Miss {String(data.monotonic.postEvictMiss)}，脏读 {String(data.monotonic.staleRead)}，单调性 {data.monotonic.monotonic ? "成立" : "失败"}。
               </p>
               <p>
                 PROBE：首次 {data.prefix.firstMiss ? "Miss" : "Hit"}，登记后 {data.prefix.secondHit ? "Hit" : "Miss"}，未访问 HBM {String(!data.prefix.hbmAccessed)}。论文：命中时前缀激活 Setup 18 ms，相对重算 1218 ms。

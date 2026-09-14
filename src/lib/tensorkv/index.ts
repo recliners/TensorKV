@@ -8,7 +8,8 @@ export {
   EvictionTracker,
 } from "./core";
 export { TensorKVAppliance, TensorKVContext } from "./appliance";
-export { VirtualOutputQueues, simulateNoisyNeighbor } from "./transport";
+export { VirtualOutputQueues, CreditShaper, simulateNoisyNeighbor } from "./transport";
+export { AtomicCrossbar } from "./crossbar";
 export {
   occupancySweep,
   scatterGatherRtts,

@@ -58,6 +58,7 @@ export class CuckooTable {
   tagCollisions = 0;
   lookups = 0;
   hits = 0;
+  hbmKeyVerifies = 0;
 
   constructor(nBuckets: number, seed = 0xa5a5n) {
     this.nBuckets = nBuckets;
@@ -98,6 +99,7 @@ export class CuckooTable {
     for (const b of bucketPair(key, this.nBuckets)) {
       for (const slot of this.buckets[b]) {
         if (slot.fingerprint !== tag) continue;
+        this.hbmKeyVerifies++;
         if (slot.fullKey !== key) {
           this.tagCollisions++;
           continue;
@@ -108,6 +110,7 @@ export class CuckooTable {
     }
     const vic = this.victimBuffer.get(key);
     if (vic) {
+      this.hbmKeyVerifies++;
       this.hits++;
       return vic.phys;
     }

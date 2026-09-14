@@ -50,7 +50,7 @@ export default function IsolationPage() {
     <SiteShell>
       <h1 className="text-2xl font-semibold tracking-tight">接收端信用整形与 QoS</h1>
       <p className="mt-2 mb-6 max-w-3xl text-sm text-muted-foreground">
-        Tenant A 持续发 GET，Tenant B 在 10–20 秒灌入 PUT 预填充。论文消融：FIFO 会因微突发丢包；只做 QoS 仍可能丢包；只做整形仍有队头阻塞；两者一起才能把受害流 P99 压住。
+        Tenant A 持续发 GET，Tenant B 在 10–20 秒用第二条 100 GbE 灌入 PUT。ToR 是浅缓冲 FIFO：线速 PUT 会把后到的 GET 挤掉，超时 200 ms。信用整形把 PUT 压到 40 Gbps，入向不再过载。QoS 只在存储节点（GET 优先、避免队头阻塞），救不回已经在 ToR 丢掉的请求。延迟由链路串行化、FPGA 流水线占用和 RTO 组成，没有按策略写死的附加值。
       </p>
       <Button onClick={run}>运行吵闹邻居实验</Button>
       <div className="mt-6 grid gap-4 md:grid-cols-4">
@@ -81,7 +81,7 @@ export default function IsolationPage() {
               <LineChart data={chart}>
                 <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.85 0.04 200 / 15%)" />
                 <XAxis dataKey="t" tickFormatter={(v) => `${v}s`} stroke="#94a3b8" />
-                <YAxis scale="log" domain={[1, 400]} stroke="#94a3b8" />
+                <YAxis scale="log" domain={[0.0001, 400]} stroke="#94a3b8" />
                 <Tooltip
                   contentStyle={{ background: "#0f172a", border: "1px solid #334155" }}
                   formatter={(v) => [`${v} ms`, ""]}
@@ -93,7 +93,7 @@ export default function IsolationPage() {
               </LineChart>
             </ResponsiveContainer>
           ) : (
-            <p className="text-sm text-muted-foreground">运行后绘制 30 秒轨迹，灰色区间对应 Tenant B 活跃。</p>
+            <p className="text-sm text-muted-foreground">运行后绘制 30 秒轨迹。纵轴是受害 GET 延迟（对数，毫秒）；干扰段 FIFO/仅 QoS 会跳到 200 ms RTO。</p>
           )}
         </CardContent>
       </Card>

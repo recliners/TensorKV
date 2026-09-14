@@ -69,15 +69,18 @@ export function monotonicRace() {
   tkv.put(3, 9, marker);
   tkv.beginEvictKey(3, 9);
   const mid = tkv.get(3, [9]);
+  const midText = new TextDecoder().decode(mid.payload);
   tkv.completeEvictKey(3, 9);
   const after = tkv.get(3, [9]);
   tkv.put(3, 10, new TextEncoder().encode("NEWDATA".padEnd(64, "\0")));
-  const stale = new TextDecoder().decode(after.payload).includes("BLOCK-X");
+  const stale = new TextDecoder().decode(after.payload).includes("BLOCK-X") || midText.includes("BLOCK-X");
   return {
-    recirculated: mid.recirculations > 0 || mid.misses.includes(9),
+    recirculated: mid.recirculations > 0,
+    missDuring: mid.misses.includes(9),
+    noPayloadDuring: !midText.includes("BLOCK-X"),
     postEvictMiss: after.misses.includes(9),
     staleRead: stale,
-    monotonic: !stale && after.misses.includes(9),
+    monotonic: !stale && after.misses.includes(9) && mid.misses.includes(9) && mid.recirculations > 0,
   };
 }
 

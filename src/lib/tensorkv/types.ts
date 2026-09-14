@@ -13,7 +13,13 @@ export const FAST_PATH_HBM_HIT_NS = 2420;
 export const RMT_LOOKUP_NS = 150;
 export const HAZARD_RECIRC_NS = 80;
 export const SLOW_PATH_CUCKOO_NS = 12400;
+export const FPGA_CYCLE_NS = 4;
+export const CROSSBAR_NOC_CYCLES = 20;
+export const ATOMIC_COMMIT_CYCLES = 1;
 export const DRR_QUANTUM_BYTES = 16384;
+export const LINK_GBPS = 100;
+export const DEFAULT_CREDIT_GBPS = 40;
+export const HIGH_PRIORITY_OPCODES = new Set(["GET", "PROBE"]);
 
 export const PAPER_TTFT = {
   recompute: { setup: 0, fetch: 0, compute: 1200, total: 1200 },

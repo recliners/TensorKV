@@ -42,6 +42,7 @@ class CuckooTable:
         self.slow_inserts = 0
         self.failed_inserts = 0
         self.tag_collisions = 0  # fingerprint match, full-key mismatch
+        self.hbm_key_verifies = 0
         self.lookups = 0
         self.hits = 0
 
@@ -73,13 +74,18 @@ class CuckooTable:
         return vic.phys if vic is not None else None
 
     def lookup(self, key: int) -> int | None:
-        """Return physical page index, or None. Fast-path match-action."""
+        """Return physical page index, or None. Fast-path match-action.
+
+        SRAM compares fingerprints; a tag match is verified against the
+        HBM-resident full key (paper: full keys live in HBM).
+        """
         self.lookups += 1
         tag = fingerprint(key)
         for b in bucket_pair(key, self.n_buckets):
             for slot in self.buckets[b]:
                 if slot.fingerprint != tag:
                     continue
+                self.hbm_key_verifies += 1
                 if slot.full_key != key:
                     self.tag_collisions += 1
                     continue
@@ -87,6 +93,7 @@ class CuckooTable:
                 return slot.phys
         vic = self.victim_buffer.get(key)
         if vic is not None:
+            self.hbm_key_verifies += 1
             self.hits += 1
             return vic.phys
         return None

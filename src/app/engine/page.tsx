@@ -46,9 +46,10 @@ export default function EnginePage() {
     tkv.device.beginEvictKey(raceCtx, 0);
     const mid = tkv.device.get(raceCtx, [0]);
     tkv.device.completeEvictKey(raceCtx, 0);
+    const after = tkv.device.get(raceCtx, [0]);
     log.push({
       title: "请求结束 · EVICT",
-      detail: `Scoreboard 回收期间 GET recirc=${mid.recirculations}；完成后为 Miss，满足单调读。`,
+      detail: `Scoreboard 回收期间 GET recirc=${mid.recirculations} miss=[${mid.misses}] payload=${mid.payload.length}B；完成后 miss=[${after.misses}]，危险期不读 HBM。`,
     });
 
     setSteps(log);

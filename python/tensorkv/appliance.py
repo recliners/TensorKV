@@ -13,18 +13,19 @@ Slow path: free-list refill, cuckoo re-insertion, eviction + atomic commit.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from .allocator import HierarchicalAllocator
 from .constants import (
-    ALLOC_FIFO_BATCH,
     BLOCK_SIZE_BYTES,
     FAST_PATH_HBM_HIT_NS,
     FAST_PATH_SRAM_HIT_NS,
     HAZARD_RECIRC_NS,
+    HIGH_PRIORITY_OPCODES,
     RMT_LOOKUP_NS,
     SLOW_PATH_CUCKOO_NS,
 )
+from .crossbar import AtomicCrossbar
 from .cuckoo import CuckooTable
 from .eviction import BlockMeta, EvictionTracker
 from .hashutil import pack_key, unpack_key
@@ -103,6 +104,7 @@ class TensorKVAppliance:
         self.eviction = EvictionTracker()
         self.shaper = CreditShaper()
         self.voq = VirtualOutputQueues()
+        self.crossbar = AtomicCrossbar()
         self.hbm: list[bytes | None] = [None] * self.cfg.n_pages
         self.contexts: dict[int, list[int]] = {}
         self.page_keys: dict[int, int] = {}
@@ -162,6 +164,7 @@ class TensorKVAppliance:
             self.hbm[page] = pack_key(context_id, seq_id).to_bytes(8, "little")
         events.append(TraceEvent("PUT", "fast", "dma_write", f"HBM[{page}] {self.cfg.block_size}B", 80))
 
+        stall = self.crossbar.lookup_gate()
         path = self.table.insert(key, page)
         self.page_keys[page] = key
         latency = FAST_PATH_SRAM_HIT_NS if path == "fast" else SLOW_PATH_CUCKOO_NS
@@ -171,13 +174,15 @@ class TensorKVAppliance:
                 path,
                 "hash_insert",
                 f"cuckoo={path} load={self.table.load_factor:.3f}",
-                latency,
+                latency + stall,
             )
         )
         if path == "slow":
+            commit_ns = self.crossbar.commit()
+            self.crossbar.release()
             self.shadow_commits += 1
             self.bank_locks += 1
-            events.append(TraceEvent("PUT", "slow", "crossbar", "atomic shadow-row commit", 80))
+            events.append(TraceEvent("PUT", "slow", "crossbar", "atomic shadow-row commit", commit_ns))
 
         self.contexts.setdefault(context_id, []).append(seq_id)
         self.eviction.add(
@@ -191,7 +196,7 @@ class TensorKVAppliance:
                 prefix_hash=prefix_hash,
             )
         )
-        self.voq.enqueue(Packet(ready_at=0, opcode="PUT", context_id=context_id, size=self.cfg.block_size))
+        self._schedule("PUT", context_id, self.cfg.block_size)
         total = sum(e.latency_ns for e in events)
         return PutResult(True, context_id, seq_id, page, path, events, total)
 
@@ -228,14 +233,17 @@ class TensorKVAppliance:
 
         for bid in block_ids:
             key = pack_key(context_id, bid)
+            stall = self.crossbar.lookup_gate()
+            latency += stall
             if self.scoreboard.is_hazard(key) or key in self.inflight_evict:
                 recirc += 1
                 events.append(
                     TraceEvent("GET", "fast", "scoreboard", f"hazard block {bid} recirculate", HAZARD_RECIRC_NS)
                 )
                 latency += HAZARD_RECIRC_NS
-                # Recirculate until mapping is gone; sequential callers see a miss
-                # if eviction already invalidated, else retry lookup.
+                misses.append(bid)
+                events.append(TraceEvent("GET", "fast", "lookup", f"MISS block {bid} (hazard, no HBM)"))
+                continue
             phys = self.table.lookup(key)
             if phys is None:
                 misses.append(bid)
@@ -253,9 +261,8 @@ class TensorKVAppliance:
         events.append(
             TraceEvent("GET", "fast", "dma_gather", f"scatter-gather {len(hits)} blocks -> contiguous stream", 200)
         )
-        self.voq.enqueue(Packet(ready_at=0, opcode="GET", context_id=context_id, size=max(1, len(hits)) * self.cfg.block_size))
-        if credit_gbps is not None:
-            self.shaper.transmit(max(1, len(hits)) * self.cfg.block_size, 0.0, paced=True)
+        shape_ns = self._schedule("GET", context_id, max(1, len(hits)) * self.cfg.block_size)
+        latency += shape_ns
 
         payload = b"".join(chunks)
         self.gathered_bytes += len(payload)
@@ -278,10 +285,12 @@ class TensorKVAppliance:
         self.probe_ops += 1
         events.append(TraceEvent("PROBE", "fast", "parser", f"PROBE({prompt_hash & 0xFFFFFFFF})"))
         events.append(TraceEvent("PROBE", "fast", "bloom", "check prefix bloom filter", 20))
+        stall = self.crossbar.lookup_gate()
         rec = self.prefix.probe(prompt_hash)
         if rec is None:
-            events.append(TraceEvent("PROBE", "fast", "index", "MISS (no HBM access)", FAST_PATH_SRAM_HIT_NS))
-            return ProbeResult(False, [], None, 0, events, FAST_PATH_SRAM_HIT_NS, False)
+            events.append(TraceEvent("PROBE", "fast", "index", "MISS (no HBM access)", FAST_PATH_SRAM_HIT_NS + stall))
+            self._schedule("PROBE", 0, 64)
+            return ProbeResult(False, [], None, 0, events, FAST_PATH_SRAM_HIT_NS + stall, False)
 
         for bid in rec.block_ids:
             key = pack_key(rec.context_id, bid)
@@ -297,7 +306,8 @@ class TensorKVAppliance:
                 FAST_PATH_SRAM_HIT_NS,
             )
         )
-        return ProbeResult(True, list(rec.block_ids), rec.context_id, rec.refcount, events, FAST_PATH_SRAM_HIT_NS, False)
+        self._schedule("PROBE", rec.context_id, 64)
+        return ProbeResult(True, list(rec.block_ids), rec.context_id, rec.refcount, events, FAST_PATH_SRAM_HIT_NS + stall, False)
 
     def publish_prefix(self, prompt_hash: int, context_id: int, block_ids: list[int]) -> PrefixRecord:
         rec = self.prefix.register(prompt_hash, context_id, block_ids, self.cfg.block_size)
@@ -368,6 +378,7 @@ class TensorKVAppliance:
         key = pack_key(context_id, block_id)
         self.scoreboard.set_hazard(key)
         self.inflight_evict.add(key)
+        self.crossbar.commit()
 
     def complete_evict_key(self, context_id: int, block_id: int) -> None:
         key = pack_key(context_id, block_id)
@@ -379,8 +390,11 @@ class TensorKVAppliance:
         if not hazard_already_set:
             self.scoreboard.set_hazard(key)
         events.append(TraceEvent("EVICT", "slow", "scoreboard", f"lock({ctx},{bid})", 20))
+        stall = self.crossbar.lookup_gate()
         phys = self.table.delete(key)
-        events.append(TraceEvent("EVICT", "slow", "crossbar", "clear map + atomic commit", 80))
+        commit_ns = self.crossbar.commit()
+        self.crossbar.release()
+        events.append(TraceEvent("EVICT", "slow", "crossbar", "clear map + atomic commit", commit_ns + stall))
         self.shadow_commits += 1
         self.bank_locks += 1
         if phys is not None:
@@ -399,6 +413,30 @@ class TensorKVAppliance:
             if not chain:
                 self.contexts.pop(ctx, None)
         self.scoreboard.clear_hazard(key)
+        self._schedule("EVICT", ctx, 64)
+
+    def _schedule(self, opcode: str, context_id: int, size: int) -> int:
+        """Enqueue on the matching VOQ, dequeue with SP+DRR, apply credit shaping.
+
+        Returns serialization delay in ns for the dequeued packet.
+        """
+        self.voq.enqueue(
+            Packet(
+                ready_at=float(self.crossbar.now_ns),
+                opcode=opcode,
+                context_id=context_id,
+                size=max(1, size),
+            )
+        )
+        pkt = self.voq.dequeue()
+        if pkt is None:
+            return 0
+        now_us = self.crossbar.now_ns / 1000.0
+        paced = pkt.opcode in HIGH_PRIORITY_OPCODES
+        _start, end = self.shaper.transmit(pkt.size, now_us, paced=paced)
+        ns = max(0, int((end - now_us) * 1000.0))
+        self.crossbar.advance(ns)
+        return ns
 
     # ------------------------------------------------------------------ stats
     def stats(self) -> dict:
@@ -420,6 +458,9 @@ class TensorKVAppliance:
             "hazard_rate": round(self.scoreboard.hazard_rate, 6),
             "recirculations": self.scoreboard.recirculations,
             "shadow_commits": self.shadow_commits,
+            "crossbar_commits": self.crossbar.commits,
+            "lookup_stalls": self.crossbar.lookup_stalls,
+            "hbm_key_verifies": self.table.hbm_key_verifies,
             "puts": self.put_ops,
             "gets": self.get_ops,
             "probes": self.probe_ops,
