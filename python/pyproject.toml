@@ -1,0 +1,11 @@
+[project]
+name = "tensorkv"
+version = "0.1.0"
+description = "Software replica of TensorKV semantic in-network KV cache algorithms"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "TensorKV replica" }]
+
+[tool.pytest.ini_options]
+testpaths = ["python/tests"]
+pythonpath = ["python"]
