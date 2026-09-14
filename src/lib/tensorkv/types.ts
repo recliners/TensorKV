@@ -20,6 +20,12 @@ export const DRR_QUANTUM_BYTES = 16384;
 export const LINK_GBPS = 100;
 export const DEFAULT_CREDIT_GBPS = 40;
 export const HIGH_PRIORITY_OPCODES = new Set(["GET", "PROBE"]);
+export const BYTES_PER_TOKEN_LLAMA70B_INT4 = 81920;
+export const BYTES_PER_TOKEN_MIXTRAL_FP8 = 65536;
+export const PAPER_PREFILL_TOKENS = 32768;
+export const PAPER_COMPUTE_MS_AT_32K = 15;
+export const HBM_CAPACITY_BYTES = 8 * 1024 * 1024 * 1024;
+export const DESCRIPTOR_BYTES = 64;
 
 export const PAPER_TTFT = {
   recompute: { setup: 0, fetch: 0, compute: 1200, total: 1200 },
@@ -99,7 +105,7 @@ export type TraceEvent = {
   latency_ns: number;
 };
 
-export type Slot = { fingerprint: number; phys: number; fullKey: bigint };
+export type Slot = { fingerprint: number; phys: number };
 export type BlockMeta = {
   key: bigint;
   contextId: number;

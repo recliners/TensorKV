@@ -84,7 +84,7 @@ export default function ExperimentsPage() {
             </CardHeader>
             <CardContent className="h-[260px]">
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={data.occupancy.map((p) => ({ load: `${p.load * 100}%`, slow: Number((p.slowInsertRate * 100).toFixed(3)), hazard: Number((p.hazardRate * 100).toFixed(3)) }))}>
+                <BarChart data={data.occupancy.map((p) => ({ load: `${p.load * 100}%`, slow: Number((p.slowInsertRate * 100).toFixed(3)), hazard: Number((p.hazardRate * 100).toFixed(3)), keep: Number((p.throughputKeep * 100).toFixed(2)) }))}>
                   <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.85 0.04 200 / 15%)" />
                   <XAxis dataKey="load" stroke="#94a3b8" />
                   <YAxis stroke="#94a3b8" />
@@ -92,6 +92,7 @@ export default function ExperimentsPage() {
                   <Legend />
                   <Bar dataKey="slow" fill="#34d399" name="慢路径插入 %" />
                   <Bar dataKey="hazard" fill="#fbbf24" name="Scoreboard 命中 %" />
+                  <Bar dataKey="keep" fill="#38bdf8" name="吞吐保持 %" />
                 </BarChart>
               </ResponsiveContainer>
             </CardContent>

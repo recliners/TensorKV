@@ -209,3 +209,37 @@ export function simulateNoisyNeighbor(
     interferenceP99: percentile(interference.length ? interference : victim, 99),
   };
 }
+
+export type IncastResult = {
+  nSources: number;
+  totalBytes: number;
+  paced: boolean;
+  arrivalGbps: number;
+  destGbps: number;
+  drops: number;
+  overflowBytes: number;
+};
+
+export function simulateAttentionIncast(opts?: { paced?: boolean; creditGbps?: number }): IncastResult {
+  const nSources = 16;
+  const totalBytes = 128 * 1024;
+  const destGbps = LINK_GBPS;
+  const paced = opts?.paced ?? true;
+  const creditGbps = opts?.creditGbps ?? DEFAULT_CREDIT_GBPS;
+  const arrivalGbps = paced ? Math.min(creditGbps, destGbps) : nSources * destGbps;
+  const perSrc = totalBytes / nSources;
+  const burstS = (perSrc * 8) / destGbps / 1e9;
+  const arrived = (arrivalGbps * 1e9) / 8 * burstS;
+  const drained = (destGbps * 1e9) / 8 * burstS;
+  const bufferBytes = 8 * 4096;
+  const overflow = Math.max(0, arrived - drained - bufferBytes);
+  return {
+    nSources,
+    totalBytes,
+    paced,
+    arrivalGbps,
+    destGbps,
+    drops: overflow > 0 ? Math.trunc(overflow / 4096) : 0,
+    overflowBytes: overflow,
+  };
+}

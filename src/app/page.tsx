@@ -40,6 +40,9 @@ const MAP = [
   { paper: "§ Prefix-Aware LFRU", code: "EvictionTracker（refcount>1 保护）" },
   { paper: "§ Credit + VOQ/DRR", code: "CreditShaper / VirtualOutputQueues" },
   { paper: "§ Crossbar commit", code: "AtomicCrossbar 1 周期 bank lock" },
+  { paper: "§ Driver 64B 描述符", code: "descriptor.py / libtkv" },
+  { paper: "§ Mixtral / 基线", code: "baselines.py 可组合 TTFT/TBT/OOM" },
+  { paper: "§ 16 源 incast", code: "incast.py 128KB fan-in" },
 ];
 
 export default function HomePage() {
@@ -62,6 +65,9 @@ export default function HomePage() {
             </Link>
             <Link href="/experiments" className={cn(buttonVariants({ variant: "outline" }))}>
               跑论文对应实验
+            </Link>
+            <Link href="/baselines" className={cn(buttonVariants({ variant: "outline" }))}>
+              可运行基线
             </Link>
           </div>
         </div>
@@ -128,6 +134,7 @@ export default function HomePage() {
               { href: "/architecture", icon: Binary, label: "看快/慢路径如何分工" },
               { href: "/engine", icon: Radio, label: "PagedAttention + PROBE 工作流" },
               { href: "/isolation", icon: Shield, label: "吵闹邻居与 QoS 消融" },
+              { href: "/baselines", icon: Workflow, label: "Host/RDMA/DPU/Mixtral 基线" },
             ].map((x) => (
               <Link key={x.href} href={x.href} className={cn(buttonVariants({ variant: "secondary" }), "justify-start")}>
                 <x.icon className="size-4" />

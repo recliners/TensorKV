@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .constants import DEFAULT_CREDIT_GBPS, TOKENS_PER_BLOCK
+from .constants import BYTES_PER_TOKEN_LLAMA70B_INT4, DEFAULT_CREDIT_GBPS, TOKENS_PER_BLOCK
 from .hashutil import mix64
 from .libtkv import TensorKVContext
 from .timing import attention_compute_ms, serialize_ms, ttft_breakdown
@@ -53,12 +53,22 @@ class EngineStats:
 
 
 class PagedEngine:
-    def __init__(self, ctx: TensorKVContext | None = None, tokens_per_block: int = TOKENS_PER_BLOCK) -> None:
+    def __init__(
+        self,
+        ctx: TensorKVContext | None = None,
+        tokens_per_block: int = TOKENS_PER_BLOCK,
+        bytes_per_token: int = BYTES_PER_TOKEN_LLAMA70B_INT4,
+    ) -> None:
         self.tkv = ctx or TensorKVContext()
         self.tpb = tokens_per_block
+        self.bytes_per_token = bytes_per_token
         self.stats = EngineStats()
         self.requests: dict[int, Request] = {}
         self._next_ctx = 1
+
+    def _logical_bytes(self, n_tokens: int) -> int:
+        """Llama-70B INT4 (or Mixtral FP8) KV bytes. Not the 4 KB stub stored in the appliance."""
+        return max(0, n_tokens) * self.bytes_per_token
 
     def _n_blocks(self, n_tokens: int) -> int:
         return (n_tokens + self.tpb - 1) // self.tpb
@@ -101,12 +111,13 @@ class PagedEngine:
 
         self.stats.prefills += 1
         fetch = self._gather(req)
-        self.stats.bytes_get += fetch.gathered_bytes
+        logical = self._logical_bytes(len(req.tokens))
+        self.stats.bytes_get += logical
         parts = ttft_breakdown(
             prefix_hit=req.prefix_hit,
             prefix_tokens=req.prefix_len,
             local_tokens=local_tokens,
-            gathered_bytes=fetch.gathered_bytes,
+            gathered_bytes=logical,
             get_latency_ns=fetch.latency_ns,
             probe_latency_ns=probe_ns,
             credit_gbps=DEFAULT_CREDIT_GBPS,
@@ -161,9 +172,10 @@ class PagedEngine:
     def decode(self, req_id: int, new_token: int = 1) -> float:
         """One decode step: gather all KV blocks, then append the new token's KV."""
         req = self.requests[req_id]
-        gathered = self._gather(req)
-        self.stats.bytes_get += gathered.gathered_bytes
-        tbt = serialize_ms(gathered.gathered_bytes, DEFAULT_CREDIT_GBPS) + attention_compute_ms(len(req.tokens)) * 0.2
+        self._gather(req)
+        logical = self._logical_bytes(len(req.tokens))
+        self.stats.bytes_get += logical
+        tbt = serialize_ms(logical, DEFAULT_CREDIT_GBPS) + attention_compute_ms(len(req.tokens)) * 0.2
         req.tokens.append(new_token)
         req.generated += 1
         suffix_len = len(req.tokens) - req.prefix_len

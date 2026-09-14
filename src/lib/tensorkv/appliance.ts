@@ -6,9 +6,12 @@ import {
   Scoreboard,
 } from "./core";
 import { AtomicCrossbar } from "./crossbar";
+import { encodeDescriptor, getDescriptor, probeDescriptor, putDescriptor } from "./descriptor";
+import { BankedHBM } from "./hbm";
 import { CreditShaper, VirtualOutputQueues } from "./transport";
 import {
   BLOCK_SIZE_BYTES,
+  DESCRIPTOR_BYTES,
   FAST_PATH_HBM_HIT_NS,
   FAST_PATH_SRAM_HIT_NS,
   HAZARD_RECIRC_NS,
@@ -57,6 +60,8 @@ export type ApplianceConfig = {
   nPages?: number;
   blockSize?: number;
   storePayloads?: boolean;
+  fastSlowSplit?: boolean;
+  zeroCopyDma?: boolean;
 };
 
 export class TensorKVAppliance {
@@ -69,7 +74,7 @@ export class TensorKVAppliance {
   shaper = new CreditShaper();
   voq = new VirtualOutputQueues();
   crossbar = new AtomicCrossbar();
-  hbm: (Uint8Array | null)[];
+  store: BankedHBM;
   contexts = new Map<number, number[]>();
   inflightEvict = new Set<string>();
   shadowCommits = 0;
@@ -86,10 +91,12 @@ export class TensorKVAppliance {
       nPages: cfg.nPages ?? 4096,
       blockSize: cfg.blockSize ?? BLOCK_SIZE_BYTES,
       storePayloads: cfg.storePayloads ?? true,
+      fastSlowSplit: cfg.fastSlowSplit ?? true,
+      zeroCopyDma: cfg.zeroCopyDma ?? true,
     };
     this.table = new CuckooTable(this.cfg.nBuckets);
     this.allocator = new HierarchicalAllocator(this.cfg.nPages);
-    this.hbm = Array.from({ length: this.cfg.nPages }, () => null);
+    this.store = new BankedHBM(this.cfg.nPages);
   }
 
   private pad(data: Uint8Array): Uint8Array {
@@ -105,7 +112,7 @@ export class TensorKVAppliance {
     events.push({ op: "PUT", path: "fast", stage: "parser", detail: `PUT(${contextId},${seqId})`, latency_ns: 0 });
     const existing = this.table.find(key);
     if (existing !== null) {
-      this.hbm[existing] = this.pad(data ?? new Uint8Array([seqId & 0xff]));
+      this.store.write(existing, key, this.pad(data ?? new Uint8Array([seqId & 0xff])), this.crossbar.nowNs);
       this.eviction.touch(key, prefixHash !== undefined, prefixHash ?? null);
       events.push({ op: "PUT", path: "fast", stage: "overwrite", detail: `HBM[${existing}]`, latency_ns: 80 });
       return { ok: true, contextId, blockId: seqId, phys: existing, path: "fast", events, latencyNs: FAST_PATH_SRAM_HIT_NS };
@@ -122,10 +129,11 @@ export class TensorKVAppliance {
       detail: `page=${page} fifo=${this.allocator.fifo.length}`,
       latency_ns: 4,
     });
-    this.hbm[page] = this.pad(data ?? new Uint8Array([seqId & 0xff]));
+    this.store.write(page, key, this.pad(data ?? new Uint8Array([seqId & 0xff])), this.crossbar.nowNs);
     events.push({ op: "PUT", path: "fast", stage: "dma_write", detail: `HBM[${page}] ${this.cfg.blockSize}B`, latency_ns: 80 });
     const stall = this.crossbar.lookupGate();
-    const path = this.table.insert(key, page);
+    let path = this.table.insert(key, page);
+    if (!this.cfg.fastSlowSplit) path = "slow";
     const latency = path === "fast" ? FAST_PATH_SRAM_HIT_NS : SLOW_PATH_CUCKOO_NS;
     events.push({
       op: "PUT",
@@ -190,7 +198,8 @@ export class TensorKVAppliance {
         continue;
       }
       const phys = this.table.lookup(key);
-      const payload = phys !== null ? this.hbm[phys] : null;
+      const [payload, hbmNs] = phys !== null ? this.store.readPayload(phys, this.crossbar.nowNs) : [null, 0];
+      latency += hbmNs;
       if (phys === null || !payload) {
         misses.push(bid);
         events.push({ op: "GET", path: "fast", stage: "lookup", detail: `MISS block ${bid}`, latency_ns: 0 });
@@ -199,15 +208,25 @@ export class TensorKVAppliance {
       chunks.push(payload);
       hits.push(bid);
       this.eviction.touch(key);
-      latency += 20;
+    }
+    let dmaNs = 200;
+    if (!this.cfg.zeroCopyDma) {
+      dmaNs += 6400;
+      events.push({ op: "GET", path: "slow", stage: "host_copy", detail: "fallback copy into registered buffer", latency_ns: 6400 });
     }
     events.push({
       op: "GET",
       path: "fast",
       stage: "dma_gather",
       detail: `scatter-gather ${hits.length} blocks → contiguous stream`,
-      latency_ns: 200,
+      latency_ns: dmaNs,
     });
+    latency += dmaNs;
+    if (!this.cfg.fastSlowSplit) {
+      const extra = SLOW_PATH_CUCKOO_NS - FAST_PATH_SRAM_HIT_NS;
+      latency += extra;
+      events.push({ op: "GET", path: "slow", stage: "control_core", detail: "no RMT split; every GET on control core", latency_ns: extra });
+    }
     const shapeNs = this.schedule("GET", contextId, Math.max(1, hits.length) * this.cfg.blockSize);
     latency += shapeNs;
     const totalLen = chunks.reduce((s, c) => s + c.length, 0);
@@ -348,7 +367,7 @@ export class TensorKVAppliance {
     events.push({ op: "EVICT", path: "slow", stage: "crossbar", detail: "clear map + atomic commit", latency_ns: commitNs + stall });
     this.shadowCommits++;
     if (phys !== null) {
-      this.hbm[phys] = null;
+      this.store.clear(phys);
       this.allocator.free(phys);
       events.push({ op: "EVICT", path: "slow", stage: "free_page", detail: `HBM[${phys}] → free list`, latency_ns: 20 });
     }
@@ -418,6 +437,8 @@ export class TensorKVAppliance {
       voqHigh: this.voq.dequeuedHigh,
       voqLow: this.voq.dequeuedLow,
       voqPreempt: this.voq.preemptions,
+      hbmBankConflicts: this.store.bankConflicts,
+      hbmMetaReads: this.store.metaReads,
     };
   }
 
@@ -425,7 +446,8 @@ export class TensorKVAppliance {
     return this.table.buckets.slice(0, limit).map((bucket, i) => ({
       bucket: i,
       slots: bucket.map((s) => {
-        const [ctx, block] = s.fingerprint ? unpackKey(s.fullKey) : [null, null];
+        const key = s.fingerprint ? this.table.keyOf(s.phys) : null;
+        const [ctx, block] = key !== null ? unpackKey(key) : [null, null];
         return { fp: s.fingerprint, phys: s.phys, ctx, block };
       }),
     }));
@@ -434,28 +456,35 @@ export class TensorKVAppliance {
 
 export class TensorKVContext {
   device: TensorKVAppliance;
-  cq: { op: string; ok: boolean; detail: string }[] = [];
+  cq: { op: string; ok: boolean; detail: string; descriptor: Uint8Array }[] = [];
+  descriptorsPosted = 0;
   constructor(device?: TensorKVAppliance) {
     this.device = device ?? new TensorKVAppliance();
   }
   putAsync(ctx: number, seq: number, data?: Uint8Array, prefixHash?: bigint) {
+    const desc = encodeDescriptor(putDescriptor(ctx, seq));
+    this.descriptorsPosted++;
     const r = this.device.put(ctx, seq, data, prefixHash);
-    this.cq.push({ op: "PUT", ok: r.ok, detail: `block ${seq} page=${r.phys}` });
+    this.cq.push({ op: "PUT", ok: r.ok, detail: `block ${seq} page=${r.phys}`, descriptor: desc });
     return r;
   }
   getAsync(ctx: number, ids: number[], credit = 40) {
+    const desc = encodeDescriptor(getDescriptor(ctx, ids, credit));
+    this.descriptorsPosted++;
     const r = this.device.get(ctx, ids, credit);
-    this.cq.push({ op: "GET", ok: r.ok, detail: `hits=${r.hits.length} misses=${r.misses.length}` });
+    this.cq.push({ op: "GET", ok: r.ok, detail: `hits=${r.hits.length} misses=${r.misses.length}`, descriptor: desc });
     return r;
   }
   probe(hash: bigint) {
+    const desc = encodeDescriptor(probeDescriptor(hash));
+    this.descriptorsPosted++;
     const r = this.device.probe(hash);
-    this.cq.push({ op: "PROBE", ok: r.hit, detail: r.hit ? `handles=${r.handles.length}` : "miss" });
+    this.cq.push({ op: "PROBE", ok: r.hit, detail: r.hit ? `handles=${r.handles.length}` : "miss", descriptor: desc });
     return r;
   }
   evict(ctx: number, policy: "lru" | "lfru" | "all" | "oldest" = "lru", k?: number) {
     const r = this.device.evict(ctx, policy, k);
-    this.cq.push({ op: "EVICT", ok: true, detail: `n=${r.evicted.length}` });
+    this.cq.push({ op: "EVICT", ok: true, detail: `n=${r.evicted.length}`, descriptor: new Uint8Array(DESCRIPTOR_BYTES) });
     return r;
   }
   poll() {

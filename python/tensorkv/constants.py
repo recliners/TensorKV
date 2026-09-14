@@ -47,7 +47,7 @@ HAZARD_RECIRC_NS = 80
 SLOW_PATH_CUCKOO_NS = 12_400  # ablation: w/o fast-slow split, GET P99 ~ 12.4 us
 # Paper: 32K-token kernel compute ≈ 15 ms after KV is resident.
 PAPER_COMPUTE_MS_AT_32K = 15.0
-PAPER_PREFILL_TOKENS = 32_000
+PAPER_PREFILL_TOKENS = 32_768
 
 # Prototype capacity.
 HBM_CAPACITY_BYTES = 8 * 1024 * 1024 * 1024  # 8 GiB U280

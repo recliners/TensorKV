@@ -1,6 +1,7 @@
 import { TensorKVAppliance, TensorKVContext } from "./appliance";
-import { mix64, SplitMix64, ZIPF_ALPHA, PAPER_EVICTION, PAPER_TTFT, PAPER_TBT } from "./types";
-import { simulateNoisyNeighbor } from "./transport";
+import { runBaselineSuite } from "./baselines";
+import { mix64, SplitMix64, ZIPF_ALPHA, PAPER_EVICTION, PAPER_TTFT, PAPER_TBT, FAST_PATH_HBM_HIT_NS, FAST_PATH_SRAM_HIT_NS, SLOW_PATH_CUCKOO_NS, HAZARD_RECIRC_NS } from "./types";
+import { simulateAttentionIncast, simulateNoisyNeighbor } from "./transport";
 
 export function promptHash(tokens: number[]): bigint {
   let h = 0x243f6a8885a308d3n;
@@ -41,11 +42,14 @@ export function occupancySweep(loads = [0.5, 0.7, 0.8, 0.9, 0.95]) {
       }
     }
     const inserts = tkv.table.fastInserts + tkv.table.slowInserts;
+    const idealNs = 2500 * FAST_PATH_HBM_HIT_NS;
+    const extraNs = tkv.scoreboard.recirculations * HAZARD_RECIRC_NS + tkv.table.slowInserts * (SLOW_PATH_CUCKOO_NS - FAST_PATH_SRAM_HIT_NS);
     return {
       load,
       slowInsertRate: inserts ? tkv.table.slowInserts / inserts : 0,
       hazardRate: tkv.scoreboard.hazardRate,
       victimBuffer: tkv.table.victimBuffer.size,
+      throughputKeep: extraNs ? idealNs / (idealNs + extraNs) : 1,
     };
   });
 }
@@ -174,5 +178,10 @@ export function runAllExperiments() {
       series: r.series.filter((_, i) => i % 4 === 0),
     })),
     paper: paperTables(),
+    incast: {
+      blast: simulateAttentionIncast({ paced: false }),
+      paced: simulateAttentionIncast({ paced: true }),
+    },
+    baselines: runBaselineSuite(),
   };
 }

@@ -12,6 +12,7 @@ const NAV = [
   { href: "/engine", label: "推理引擎" },
   { href: "/isolation", label: "流控隔离" },
   { href: "/experiments", label: "实验" },
+  { href: "/baselines", label: "基线" },
 ];
 
 export function SiteHeader() {

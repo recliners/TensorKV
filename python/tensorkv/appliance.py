@@ -20,18 +20,19 @@ from .constants import (
     BLOCK_SIZE_BYTES,
     FAST_PATH_HBM_HIT_NS,
     FAST_PATH_SRAM_HIT_NS,
-    HAZARD_RECIRC_NS,
     HIGH_PRIORITY_OPCODES,
-    RMT_LOOKUP_NS,
     SLOW_PATH_CUCKOO_NS,
 )
 from .crossbar import AtomicCrossbar
 from .cuckoo import CuckooTable
 from .eviction import BlockMeta, EvictionTracker
 from .hashutil import pack_key, unpack_key
+from .hbm import BankedHBM
+from .pipeline import dma_descriptor_ns, recirc_ns, rmt_lookup_ns
 from .prefix import PrefixIndex, PrefixRecord
 from .scoreboard import Scoreboard
 from .transport import CreditShaper, Packet, VirtualOutputQueues
+from .world import World
 
 
 @dataclass
@@ -92,6 +93,8 @@ class ApplianceConfig:
     block_size: int = BLOCK_SIZE_BYTES
     store_payloads: bool = True
     seed: int = 0xC0FFEE
+    fast_slow_split: bool = True
+    zero_copy_dma: bool = True
 
 
 class TensorKVAppliance:
@@ -105,9 +108,9 @@ class TensorKVAppliance:
         self.shaper = CreditShaper()
         self.voq = VirtualOutputQueues()
         self.crossbar = AtomicCrossbar()
-        self.hbm: list[bytes | None] = [None] * self.cfg.n_pages
+        self.world = World()
+        self.store = BankedHBM(self.cfg.n_pages)
         self.contexts: dict[int, list[int]] = {}
-        self.page_keys: dict[int, int] = {}
         self.shadow_commits = 0
         self.bank_locks = 0
         self.put_ops = 0
@@ -116,6 +119,16 @@ class TensorKVAppliance:
         self.evict_ops = 0
         self.gathered_bytes = 0
         self.inflight_evict: set[int] = set()
+
+    def _payload_bytes(self, context_id: int, seq_id: int, data: bytes | None) -> bytes:
+        if not self.cfg.store_payloads:
+            return pack_key(context_id, seq_id).to_bytes(8, "little")
+        payload = data if data is not None else bytes([seq_id & 0xFF]) * min(16, self.cfg.block_size)
+        if len(payload) > self.cfg.block_size:
+            payload = payload[: self.cfg.block_size]
+        elif len(payload) < self.cfg.block_size:
+            payload = payload + bytes(self.cfg.block_size - len(payload))
+        return payload
 
     # ------------------------------------------------------------------ PUT
     def put(
@@ -132,15 +145,8 @@ class TensorKVAppliance:
 
         existing = self.table.find(key)
         if existing is not None:
-            payload = data if data is not None else bytes([seq_id & 0xFF]) * min(16, self.cfg.block_size)
-            if self.cfg.store_payloads:
-                if len(payload) > self.cfg.block_size:
-                    payload = payload[: self.cfg.block_size]
-                elif len(payload) < self.cfg.block_size:
-                    payload = payload + bytes(self.cfg.block_size - len(payload))
-                self.hbm[existing] = payload
-            else:
-                self.hbm[existing] = pack_key(context_id, seq_id).to_bytes(8, "little")
+            payload = self._payload_bytes(context_id, seq_id, data)
+            self.store.write(existing, key, payload, self.crossbar.now_ns)
             self.eviction.touch(key, prefix=prefix_hash is not None, prefix_hash=prefix_hash)
             events.append(TraceEvent("PUT", "fast", "overwrite", f"HBM[{existing}] in-place", 80))
             return PutResult(True, context_id, seq_id, existing, "fast", events, FAST_PATH_SRAM_HIT_NS)
@@ -152,21 +158,14 @@ class TensorKVAppliance:
 
         events.append(TraceEvent("PUT", "fast", "fifo_pop", f"page={page} fifo={len(self.allocator.fifo)}", 4))
 
-        payload = data if data is not None else bytes([seq_id & 0xFF]) * min(16, self.cfg.block_size)
-        if self.cfg.store_payloads:
-            if len(payload) > self.cfg.block_size:
-                payload = payload[: self.cfg.block_size]
-            elif len(payload) < self.cfg.block_size:
-                payload = payload + bytes(self.cfg.block_size - len(payload))
-            self.hbm[page] = payload
-        else:
-            # Store a compact checksum token so GET can still verify identity.
-            self.hbm[page] = pack_key(context_id, seq_id).to_bytes(8, "little")
-        events.append(TraceEvent("PUT", "fast", "dma_write", f"HBM[{page}] {self.cfg.block_size}B", 80))
+        payload = self._payload_bytes(context_id, seq_id, data)
+        hbm_ns = self.store.write(page, key, payload, self.crossbar.now_ns)
+        events.append(TraceEvent("PUT", "fast", "dma_write", f"HBM[{page}] {self.cfg.block_size}B", hbm_ns))
 
         stall = self.crossbar.lookup_gate()
         path = self.table.insert(key, page)
-        self.page_keys[page] = key
+        if not self.cfg.fast_slow_split:
+            path = "slow"
         latency = FAST_PATH_SRAM_HIT_NS if path == "fast" else SLOW_PATH_CUCKOO_NS
         events.append(
             TraceEvent(
@@ -229,7 +228,7 @@ class TensorKVAppliance:
         hits: list[int] = []
         misses: list[int] = []
         recirc = 0
-        latency = RMT_LOOKUP_NS
+        latency = rmt_lookup_ns(max(1, len(block_ids)))
 
         for bid in block_ids:
             key = pack_key(context_id, bid)
@@ -238,9 +237,9 @@ class TensorKVAppliance:
             if self.scoreboard.is_hazard(key) or key in self.inflight_evict:
                 recirc += 1
                 events.append(
-                    TraceEvent("GET", "fast", "scoreboard", f"hazard block {bid} recirculate", HAZARD_RECIRC_NS)
+                    TraceEvent("GET", "fast", "scoreboard", f"hazard block {bid} recirculate", recirc_ns())
                 )
-                latency += HAZARD_RECIRC_NS
+                latency += recirc_ns()
                 misses.append(bid)
                 events.append(TraceEvent("GET", "fast", "lookup", f"MISS block {bid} (hazard, no HBM)"))
                 continue
@@ -249,18 +248,27 @@ class TensorKVAppliance:
                 misses.append(bid)
                 events.append(TraceEvent("GET", "fast", "lookup", f"MISS block {bid}"))
                 continue
-            payload = self.hbm[phys]
+            payload, hbm_ns = self.store.read_payload(phys, self.crossbar.now_ns)
+            latency += hbm_ns
             if payload is None:
                 misses.append(bid)
                 continue
             chunks.append(payload)
             hits.append(bid)
             self.eviction.touch(key)
-            latency += 20  # unrolled match-action stage per ID
 
+        dma_ns = dma_descriptor_ns(len(hits))
+        if not self.cfg.zero_copy_dma:
+            dma_ns += 6_400
+            events.append(TraceEvent("GET", "slow", "host_copy", "fallback copy into registered buffer", 6_400))
         events.append(
-            TraceEvent("GET", "fast", "dma_gather", f"scatter-gather {len(hits)} blocks -> contiguous stream", 200)
+            TraceEvent("GET", "fast", "dma_gather", f"scatter-gather {len(hits)} blocks -> contiguous stream", dma_ns)
         )
+        latency += dma_ns
+        if not self.cfg.fast_slow_split:
+            extra = SLOW_PATH_CUCKOO_NS - FAST_PATH_SRAM_HIT_NS
+            latency += extra
+            events.append(TraceEvent("GET", "slow", "control_core", "no RMT split; every GET on control core", extra))
         shape_ns = self._schedule("GET", context_id, max(1, len(hits)) * self.cfg.block_size)
         latency += shape_ns
 
@@ -278,6 +286,28 @@ class TensorKVAppliance:
             recirculations=recirc,
             gathered_bytes=len(payload),
         )
+
+    def finish_get(
+        self,
+        context_id: int,
+        block_ids: list[int],
+        credit_gbps: float | None = None,
+        max_recirc: int = 64,
+    ) -> GetResult:
+        """Retry GET after scoreboard recirculation until the map is stable."""
+        total_recirc = 0
+        last: GetResult | None = None
+        for _ in range(max_recirc):
+            last = self.get(context_id, block_ids, credit_gbps)
+            total_recirc += last.recirculations
+            if last.recirculations == 0:
+                last.recirculations = total_recirc
+                return last
+            self.world.advance(recirc_ns())
+            self.crossbar.advance(recirc_ns())
+        assert last is not None
+        last.recirculations = total_recirc
+        return last
 
     # ------------------------------------------------------------------ PROBE
     def probe(self, prompt_hash: int) -> ProbeResult:
@@ -398,8 +428,7 @@ class TensorKVAppliance:
         self.shadow_commits += 1
         self.bank_locks += 1
         if phys is not None:
-            self.hbm[phys] = None
-            self.page_keys.pop(phys, None)
+            self.store.clear(phys)
             self.allocator.free(phys)
             events.append(TraceEvent("EVICT", "slow", "free_page", f"HBM[{phys}] -> free list", 20))
         meta = self.eviction.remove(key)
@@ -473,6 +502,8 @@ class TensorKVAppliance:
             "voq_high": self.voq.dequeued_high,
             "voq_low": self.voq.dequeued_low,
             "voq_preempt": self.voq.preemptions,
+            "hbm_bank_conflicts": self.store.bank_conflicts,
+            "hbm_meta_reads": self.store.meta_reads,
         }
 
     def snapshot_buckets(self, limit: int = 32) -> list[dict]:
@@ -485,9 +516,9 @@ class TensorKVAppliance:
                         {
                             "fp": s.fingerprint,
                             "phys": s.phys,
-                            "key": s.full_key,
-                            "ctx": unpack_key(s.full_key)[0] if s.fingerprint else None,
-                            "block": unpack_key(s.full_key)[1] if s.fingerprint else None,
+                            "key": self.table.key_of(s.phys) or 0,
+                            "ctx": unpack_key(self.table.key_of(s.phys) or 0)[0] if s.fingerprint else None,
+                            "block": unpack_key(self.table.key_of(s.phys) or 0)[1] if s.fingerprint else None,
                         }
                         for s in bucket
                     ],

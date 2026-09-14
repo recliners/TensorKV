@@ -52,6 +52,7 @@ export class CuckooTable {
   rng: SplitMix64;
   buckets: Slot[][];
   victimBuffer = new Map<bigint, Slot>();
+  hbmKeys = new Map<number, bigint>();
   size = 0;
   fastInserts = 0;
   slowInserts = 0;
@@ -64,8 +65,24 @@ export class CuckooTable {
     this.nBuckets = nBuckets;
     this.rng = new SplitMix64(seed);
     this.buckets = Array.from({ length: nBuckets }, () =>
-      Array.from({ length: this.slotsPer }, () => ({ fingerprint: 0, phys: 0, fullKey: 0n })),
+      Array.from({ length: this.slotsPer }, () => ({ fingerprint: 0, phys: 0 })),
     );
+  }
+
+  keyOf(phys: number): bigint | null {
+    return this.hbmKeys.get(phys) ?? null;
+  }
+
+  private bind(phys: number, key: bigint) {
+    this.hbmKeys.set(phys, key);
+  }
+
+  private unbind(phys: number) {
+    this.hbmKeys.delete(phys);
+  }
+
+  private slotKey(slot: Slot): bigint {
+    return this.hbmKeys.get(slot.phys) ?? 0n;
   }
 
   get capacity() {
@@ -86,7 +103,7 @@ export class CuckooTable {
     const tag = fingerprint(key);
     for (const b of bucketPair(key, this.nBuckets)) {
       for (const slot of this.buckets[b]) {
-        if (slot.fingerprint === tag && slot.fullKey === key) return slot.phys;
+        if (slot.fingerprint === tag && this.slotKey(slot) === key) return slot.phys;
       }
     }
     const vic = this.victimBuffer.get(key);
@@ -100,7 +117,7 @@ export class CuckooTable {
       for (const slot of this.buckets[b]) {
         if (slot.fingerprint !== tag) continue;
         this.hbmKeyVerifies++;
-        if (slot.fullKey !== key) {
+        if (this.slotKey(slot) !== key) {
           this.tagCollisions++;
           continue;
         }
@@ -127,7 +144,8 @@ export class CuckooTable {
     for (const b of [h1, h2]) {
       const empty = this.emptyIndex(b);
       if (empty !== null) {
-        this.buckets[b][empty] = { fingerprint: tag, phys, fullKey: key };
+        this.buckets[b][empty] = { fingerprint: tag, phys };
+        this.bind(phys, key);
         this.size++;
         this.fastInserts++;
         return "fast";
@@ -140,21 +158,25 @@ export class CuckooTable {
     for (let k = 0; k < this.maxKicks; k++) {
       const slotI = this.rng.randint(0, this.slotsPer - 1);
       const victim = this.buckets[curBucket][slotI];
-      this.buckets[curBucket][slotI] = { fingerprint: curTag, phys: curPhys, fullKey: curKey };
-      curKey = victim.fullKey;
+      const victimKey = this.slotKey(victim);
+      this.buckets[curBucket][slotI] = { fingerprint: curTag, phys: curPhys };
+      this.bind(curPhys, curKey);
+      curKey = victimKey;
       curPhys = victim.phys;
       curTag = victim.fingerprint;
       const [vh1, vh2] = bucketPair(curKey, this.nBuckets);
       curBucket = curBucket === vh1 ? vh2 : vh1;
       const empty = this.emptyIndex(curBucket);
       if (empty !== null) {
-        this.buckets[curBucket][empty] = { fingerprint: curTag, phys: curPhys, fullKey: curKey };
+        this.buckets[curBucket][empty] = { fingerprint: curTag, phys: curPhys };
+        this.bind(curPhys, curKey);
         this.size++;
         this.slowInserts++;
         return "slow";
       }
     }
-    this.victimBuffer.set(curKey, { fingerprint: curTag, phys: curPhys, fullKey: curKey });
+    this.victimBuffer.set(curKey, { fingerprint: curTag, phys: curPhys });
+    this.bind(curPhys, curKey);
     this.size++;
     this.slowInserts++;
     return "slow";
@@ -164,25 +186,33 @@ export class CuckooTable {
     const tag = fingerprint(key);
     for (const b of bucketPair(key, this.nBuckets)) {
       for (const slot of this.buckets[b]) {
-        if (slot.fingerprint === tag && slot.fullKey === key) {
+        if (slot.fingerprint === tag && this.slotKey(slot) === key) {
+          const old = slot.phys;
           slot.phys = phys;
+          if (old !== phys) this.unbind(old);
+          this.bind(phys, key);
           return;
         }
       }
     }
     const vic = this.victimBuffer.get(key);
-    if (vic) vic.phys = phys;
+    if (vic) {
+      const old = vic.phys;
+      vic.phys = phys;
+      if (old !== phys) this.unbind(old);
+      this.bind(phys, key);
+    }
   }
 
   delete(key: bigint): number | null {
     const tag = fingerprint(key);
     for (const b of bucketPair(key, this.nBuckets)) {
       for (const slot of this.buckets[b]) {
-        if (slot.fingerprint === tag && slot.fullKey === key) {
+        if (slot.fingerprint === tag && this.slotKey(slot) === key) {
           const phys = slot.phys;
           slot.fingerprint = 0;
           slot.phys = 0;
-          slot.fullKey = 0n;
+          this.unbind(phys);
           this.size--;
           return phys;
         }
@@ -192,6 +222,7 @@ export class CuckooTable {
     if (vic) {
       this.victimBuffer.delete(key);
       this.size--;
+      this.unbind(vic.phys);
       return vic.phys;
     }
     return null;

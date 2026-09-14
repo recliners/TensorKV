@@ -11,10 +11,21 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .appliance import ApplianceConfig, TensorKVAppliance
-from .constants import PAPER_EVICTION, PAPER_TBT_MS, PAPER_TTFT_MS, ZIPF_ALPHA
-from .engine import PagedEngine, prompt_hash
-from .hashutil import SplitMix64, pack_key
-from .libtkv import TensorKVContext
+from .baselines import run_baseline_suite
+from .constants import (
+    FAST_PATH_HBM_HIT_NS,
+    FAST_PATH_SRAM_HIT_NS,
+    PAPER_EVICTION,
+    PAPER_TBT_MS,
+    PAPER_TTFT_MS,
+    SLOW_PATH_CUCKOO_NS,
+    ZIPF_ALPHA,
+)
+from .engine import PagedEngine
+from .hashutil import SplitMix64
+from .incast import simulate_attention_incast
+from .pipeline import recirc_ns
+from .sglang import SGLangEngine
 from .transport import IsolationResult, simulate_noisy_neighbor
 
 
@@ -45,6 +56,9 @@ class OccupancyPoint:
     hazard_rate: float
     victim_buffer: int
     throughput_keep: float
+    service_ns: int
+    ideal_ns: int
+    extra_ns: int
 
 
 def occupancy_sweep(loads: tuple[float, ...] = (0.5, 0.7, 0.8, 0.9, 0.95), seed: int = 1) -> list[OccupancyPoint]:
@@ -78,7 +92,14 @@ def occupancy_sweep(loads: tuple[float, ...] = (0.5, 0.7, 0.8, 0.9, 0.95), seed:
                 live.append(nxt)
                 target += 1
         slow = tkv.table.slow_inserts / max(1, tkv.table.fast_inserts + tkv.table.slow_inserts)
-        keep = 1.0 - min(0.05, slow * 0.4 + tkv.scoreboard.hazard_rate)
+        # Line-rate service: each GET is an HBM hit. Recirc adds 80 ns; slow
+        # inserts pay the control-core Cuckoo interval instead of SRAM hit.
+        ideal_ns = n_ops * FAST_PATH_HBM_HIT_NS
+        extra_ns = tkv.scoreboard.recirculations * recirc_ns() + tkv.table.slow_inserts * (
+            SLOW_PATH_CUCKOO_NS - FAST_PATH_SRAM_HIT_NS
+        )
+        service_ns = ideal_ns + extra_ns
+        keep = ideal_ns / service_ns if service_ns else 1.0
         out.append(
             OccupancyPoint(
                 load=load,
@@ -86,6 +107,9 @@ def occupancy_sweep(loads: tuple[float, ...] = (0.5, 0.7, 0.8, 0.9, 0.95), seed:
                 hazard_rate=tkv.scoreboard.hazard_rate,
                 victim_buffer=len(tkv.table.victim_buffer),
                 throughput_keep=keep,
+                service_ns=service_ns,
+                ideal_ns=ideal_ns,
+                extra_ns=extra_ns,
             )
         )
     return out
@@ -245,6 +269,31 @@ def paper_reference_tables() -> dict:
     return {"ttft": PAPER_TTFT_MS, "tbt": PAPER_TBT_MS, "eviction": PAPER_EVICTION}
 
 
+def attention_incast() -> dict:
+    blast = simulate_attention_incast(credit_gbps=None)
+    paced = simulate_attention_incast(credit_gbps=40.0)
+    return {
+        "blast": blast.__dict__,
+        "paced": paced.__dict__,
+        "blast_drops": blast.drops,
+        "paced_drops": paced.drops,
+        "sources": blast.n_sources,
+        "total_bytes": blast.total_bytes,
+    }
+
+
+def sglang_radix() -> dict:
+    eng = SGLangEngine()
+    prefix = list(range(64))
+    leaf = eng.insert_prefix(prefix)
+    second = eng.activate(prefix + [7, 8, 9])
+    return {
+        "leaf_blocks": len(leaf.block_ids),
+        "second_prefix_hit": second.prefix_hit,
+        "probe_hits": eng.tkv.device.prefix.hits,
+    }
+
+
 def run_all() -> dict:
     occ = occupancy_sweep()
     iso = isolation_experiment()
@@ -264,5 +313,8 @@ def run_all() -> dict:
             }
             for k, v in iso.items()
         },
+        "incast": attention_incast(),
+        "sglang": sglang_radix(),
+        "baselines": run_baseline_suite(),
         "paper": paper_reference_tables(),
     }

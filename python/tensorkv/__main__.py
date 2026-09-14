@@ -1,4 +1,4 @@
-"""CLI: python -m tensorkv [demo|experiment|selftest]"""
+"""CLI: python -m tensorkv [demo|experiment|engine|baselines|selftest]"""
 
 from __future__ import annotations
 
@@ -57,6 +57,13 @@ def cmd_experiment() -> int:
     return 0
 
 
+def cmd_baselines() -> int:
+    from tensorkv.baselines import run_baseline_suite
+
+    print(json.dumps(run_baseline_suite(), indent=2, default=str))
+    return 0
+
+
 def cmd_selftest() -> int:
     from tests.test_tensorkv import run_unittest
 
@@ -65,9 +72,20 @@ def cmd_selftest() -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="TensorKV software replica")
-    parser.add_argument("command", choices=["demo", "experiment", "engine", "selftest"], nargs="?", default="demo")
+    parser.add_argument(
+        "command",
+        choices=["demo", "experiment", "engine", "baselines", "selftest"],
+        nargs="?",
+        default="demo",
+    )
     args = parser.parse_args()
-    return {"demo": cmd_demo, "experiment": cmd_experiment, "engine": cmd_engine, "selftest": cmd_selftest}[args.command]()
+    return {
+        "demo": cmd_demo,
+        "experiment": cmd_experiment,
+        "engine": cmd_engine,
+        "baselines": cmd_baselines,
+        "selftest": cmd_selftest,
+    }[args.command]()
 
 
 if __name__ == "__main__":

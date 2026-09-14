@@ -10,12 +10,34 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from tensorkv.appliance import ApplianceConfig, TensorKVAppliance
+from tensorkv.baselines import (
+    ablation_get_p99_us,
+    bandwidth_sweep,
+    dpu_gbps,
+    dpu_mpps,
+    energy_sim,
+    mixtral_sharing,
+    moe_tbt_breakdown,
+    tbt_sim,
+    ttft_sim,
+    uncached_logical_get,
+)
 from tensorkv.bloom import BloomFilter
 from tensorkv.crossbar import AtomicCrossbar
-from tensorkv.cuckoo import CuckooTable
+from tensorkv.cuckoo import CuckooTable, Slot
+from tensorkv.descriptor import DESCRIPTOR_BYTES, get_descriptor, put_descriptor
 from tensorkv.engine import PagedEngine
-from tensorkv.experiments import monotonic_race, occupancy_sweep, prefix_activation, scatter_gather_rtts
+from tensorkv.experiments import (
+    attention_incast,
+    monotonic_race,
+    occupancy_sweep,
+    prefix_activation,
+    scatter_gather_rtts,
+    sglang_radix,
+)
 from tensorkv.hashutil import fingerprint, pack_key
+from tensorkv.hbm import BankedHBM
+from tensorkv.incast import simulate_attention_incast
 from tensorkv.libtkv import TensorKVContext
 from tensorkv.transport import VirtualOutputQueues, Packet, simulate_noisy_neighbor
 
@@ -236,6 +258,170 @@ class TestLibTkvAndEngine(unittest.TestCase):
         pts = occupancy_sweep(loads=(0.5, 0.8))
         self.assertEqual(len(pts), 2)
         self.assertGreaterEqual(pts[1].load, pts[0].load)
+        self.assertGreater(pts[0].throughput_keep, 0.5)
+        self.assertEqual(pts[0].service_ns, pts[0].ideal_ns + pts[0].extra_ns)
+
+
+class TestDescriptorAndHBM(unittest.TestCase):
+    def test_descriptor_is_64_bytes(self) -> None:
+        raw = put_descriptor(1, 7, gpu_ptr=0x1000).encode()
+        self.assertEqual(len(raw), DESCRIPTOR_BYTES)
+        got = get_descriptor(1, list(range(12)), credit_gbps=40.0).encode()
+        self.assertEqual(len(got), DESCRIPTOR_BYTES)
+        decoded = get_descriptor(1, list(range(12)), credit_gbps=40.0)
+        self.assertEqual(decoded.n_blocks, 12)
+        self.assertEqual(len(decoded.block_ids), 8)
+
+    def test_sram_slot_has_no_full_key(self) -> None:
+        self.assertEqual(set(Slot.__dataclass_fields__), {"fingerprint", "phys"})
+        slot = Slot()
+        self.assertFalse(hasattr(slot, "full_key"))
+
+    def test_hbm_stores_full_key(self) -> None:
+        hbm = BankedHBM(64)
+        key = pack_key(3, 9)
+        hbm.write(5, key, b"x" * 16)
+        stored, _ = hbm.read_key(5)
+        self.assertEqual(stored, key)
+        self.assertGreaterEqual(hbm.meta_reads, 1)
+
+    def test_hbm_bank_conflict(self) -> None:
+        hbm = BankedHBM(64, n_banks=32)
+        hbm.write(0, 1, b"a", now_ns=0)
+        # page 32 shares bank 0
+        cost = hbm.write(32, 2, b"b", now_ns=0)
+        self.assertGreater(hbm.bank_conflicts, 0)
+        self.assertGreater(cost, 0)
+
+    def test_finish_get_miss_after_map_cleared(self) -> None:
+        tkv = TensorKVAppliance(ApplianceConfig(n_pages=8, n_buckets=8, block_size=16))
+        tkv.put(1, 0, b"OLD")
+        tkv.begin_evict_key(1, 0)
+        mid = tkv.get(1, [0])
+        self.assertIn(0, mid.misses)
+        tkv.complete_evict_key(1, 0)
+        after = tkv.finish_get(1, [0])
+        self.assertIn(0, after.misses)
+        self.assertEqual(after.recirculations, 0)
+
+    def test_libtkv_posts_64b_descriptor(self) -> None:
+        ctx = TensorKVContext(TensorKVAppliance(ApplianceConfig(block_size=16, n_pages=8, n_buckets=8)))
+        ctx.register_gpu_memory(0x2000, 4096)
+        ctx.put_async(1, 0, b"z", gpu_ptr=0x2000)
+        c = ctx.poll_completion()
+        self.assertIsNotNone(c)
+        assert c is not None
+        self.assertEqual(len(c.descriptor), 64)
+
+
+class TestBaselinesAndPaperTables(unittest.TestCase):
+    def test_logical_get_rtts(self) -> None:
+        tkv = uncached_logical_get("tensorkv", 8)
+        rdma = uncached_logical_get("rdma_uncached", 8)
+        self.assertEqual(tkv.rtts, 1.0)
+        self.assertEqual(rdma.rtts, 9.0)
+        self.assertEqual(tkv.total_ns, 800 + 150 + 1150)
+
+    def test_ttft_tensorkv_32k_parts(self) -> None:
+        t = ttft_sim("tensorkv")
+        self.assertAlmostEqual(t.setup_ms, 18.0, delta=0.05)
+        self.assertGreater(t.fetch_ms, 200.0)
+        self.assertAlmostEqual(t.compute_ms, 15.0, delta=0.05)
+        self.assertEqual(t.payload_bytes, 32_768 * 81_920)
+
+    def test_tbt_1gb_named_parts(self) -> None:
+        tkv = tbt_sim("tensorkv")
+        rdma = tbt_sim("rdma_opt")
+        host = tbt_sim("host_a100")
+        self.assertAlmostEqual(tkv.total_ms, 102.0, delta=0.2)
+        self.assertAlmostEqual(rdma.total_ms, 140.0, delta=0.2)
+        self.assertAlmostEqual(host.total_ms, 210.0, delta=2.0)
+
+    def test_bandwidth_tkv_below_rdma(self) -> None:
+        rows = bandwidth_sweep()
+        by_link = {r["link_gbps"]: r for r in rows}
+        self.assertLess(by_link[100.0]["tensorkv_ms"], by_link[100.0]["rdma_opt_ms"])
+        self.assertLess(by_link[25.0]["tensorkv_ms"], by_link[25.0]["rdma_opt_ms"])
+        self.assertGreater(by_link[25.0]["tensorkv_ms"], by_link[100.0]["tensorkv_ms"])
+        self.assertAlmostEqual(by_link[100.0]["tensorkv_ms"], 102.0, delta=0.2)
+
+    def test_dpu_sweep_saturates(self) -> None:
+        self.assertAlmostEqual(dpu_mpps(16), 1.89, places=2)
+        self.assertAlmostEqual(dpu_mpps(32), 1.91, places=2)
+        self.assertAlmostEqual(dpu_gbps(16), 1.89e6 * 4096 * 8 / 1e9, delta=0.5)
+        self.assertGreater(dpu_gbps(16), 60.0)
+        self.assertLess(dpu_gbps(16), 65.0)
+
+    def test_ablation_get_p99(self) -> None:
+        self.assertEqual(ablation_get_p99_us(True, True), 2.1)
+        self.assertEqual(ablation_get_p99_us(False, True), 12.4)
+        self.assertEqual(ablation_get_p99_us(True, False), 8.5)
+
+    def test_appliance_ablation_flags_change_latency(self) -> None:
+        def one(fast: bool, zc: bool) -> int:
+            tkv = TensorKVAppliance(
+                ApplianceConfig(n_pages=8, n_buckets=8, block_size=64, fast_slow_split=fast, zero_copy_dma=zc)
+            )
+            tkv.put(1, 0, b"x")
+            return tkv.get(1, [0]).latency_ns
+
+        full = one(True, True)
+        nosplit = one(False, True)
+        nozc = one(True, False)
+        self.assertGreater(nosplit, full)
+        self.assertGreater(nozc, full)
+
+    def test_mixtral_64way_fits_8gib(self) -> None:
+        m = mixtral_sharing("64way")
+        self.assertTrue(m.fits_8gib)
+        self.assertTrue(m.gpu_graph_oom)
+        self.assertGreater(m.logical_bytes, 130e9)
+        self.assertLess(m.remote_need_bytes, 8 * (1 << 30))
+        self.assertAlmostEqual(m.unique_bytes / 1e9, 4.3, delta=0.05)
+
+    def test_mixtral_noshare_remote_oom(self) -> None:
+        m = mixtral_sharing("noshare")
+        self.assertFalse(m.fits_8gib)
+        self.assertFalse(m.gpu_graph_oom)
+        self.assertGreater(m.remote_need_bytes, 9.7e9)
+        self.assertIsNone(m.tkv_hard_tbt_ms)
+        self.assertIsNotNone(m.oom_message)
+
+    def test_moe_tbt_16way_sums(self) -> None:
+        tkv = moe_tbt_breakdown("tkv_hard")
+        host = moe_tbt_breakdown("host_soft")
+        self.assertAlmostEqual(tkv["total"], 47.0, delta=0.6)
+        self.assertAlmostEqual(host["total"], 85.0, delta=0.6)
+        self.assertLess(tkv["total"], host["total"])
+
+    def test_energy_tkv_below_host(self) -> None:
+        tkv = energy_sim("tensorkv")
+        host = energy_sim("host_a100")
+        self.assertAlmostEqual(tkv.j_per_tok, 0.59, delta=0.02)
+        self.assertAlmostEqual(host.j_per_tok, 1.50, delta=0.02)
+        self.assertLess(tkv.j_per_tok, host.j_per_tok)
+
+    def test_attention_incast_credit_stops_drops(self) -> None:
+        blast = simulate_attention_incast(credit_gbps=None)
+        paced = simulate_attention_incast(credit_gbps=40.0)
+        self.assertEqual(blast.n_sources, 16)
+        self.assertEqual(blast.total_bytes, 128 * 1024)
+        self.assertGreater(blast.arrival_gbps, blast.dest_gbps)
+        self.assertGreater(blast.drops, paced.drops)
+        self.assertEqual(paced.drops, 0)
+        summary = attention_incast()
+        self.assertEqual(summary["paced_drops"], 0)
+
+    def test_sglang_radix_probe_hit(self) -> None:
+        r = sglang_radix()
+        self.assertTrue(r["second_prefix_hit"])
+        self.assertGreater(r["leaf_blocks"], 0)
+
+    def test_engine_counts_logical_kv_bytes(self) -> None:
+        eng = PagedEngine(bytes_per_token=81_920)
+        req = eng.submit(1, list(range(32)))
+        self.assertEqual(eng.stats.bytes_get, 32 * 81_920)
+        self.assertGreater(req.ttft_fetch_ms, 0.0)
 
 
 def run_unittest() -> int:

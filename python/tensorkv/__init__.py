@@ -1,6 +1,7 @@
 """TensorKV software replica of the paper's semantic in-network KV cache."""
 
 from .appliance import ApplianceConfig, TensorKVAppliance
+from .baselines import run_baseline_suite
 from .constants import (
     BLOCK_SIZE_BYTES,
     BYTES_PER_TOKEN_LLAMA70B_INT4,
@@ -15,6 +16,7 @@ __all__ = [
     "TensorKVContext",
     "PagedEngine",
     "open_device",
+    "run_baseline_suite",
     "BLOCK_SIZE_BYTES",
     "BYTES_PER_TOKEN_LLAMA70B_INT4",
     "TOKENS_PER_BLOCK",
