@@ -20,8 +20,8 @@ const noto = Noto_Sans_SC({
 });
 
 export const metadata: Metadata = {
-  title: "TensorKV 算法复现",
-  description: "语义感知网内 KV 缓存：PUT / GET / PROBE / EVICT 软件复现",
+  title: "TensorKV",
+  description: "语义感知网内 KV 缓存：PUT / GET / PROBE / EVICT 软件实现",
 };
 
 export default function RootLayout({

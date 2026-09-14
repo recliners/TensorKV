@@ -1,4 +1,4 @@
-"""TensorKV software replica of the paper's semantic in-network KV cache."""
+"""TensorKV: a semantic in-network KV cache for long-context LLM inference."""
 
 from .appliance import ApplianceConfig, TensorKVAppliance
 from .baselines import run_baseline_suite

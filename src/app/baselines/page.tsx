@@ -38,10 +38,10 @@ export default function BaselinesPage() {
     <SiteShell>
       <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">可运行基线与论文对照</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">可运行基线</h1>
           <p className="mt-2 max-w-3xl text-sm text-muted-foreground">
-            下面每一条路径都按论文里的<strong>命名部件</strong>组合：100 GbE / PCIe 串行化、Table tbt_breakdown 的 meta/sync、逻辑 GET 分解、Mixtral 足迹、DPU worker 扫、消融表。
-            不是 A100 墙钟实测。论文表格只作对照。
+            下面每一条路径都按<strong>命名部件</strong>组合：100 GbE / PCIe 串行化、1 GB decode 的 meta/sync、逻辑 GET 分解、Mixtral 足迹、DPU worker 扫、消融表。
+            不是 A100 墙钟实测。评估表是同一套组合的目标工作点。
           </p>
         </div>
         <Button onClick={run}>运行基线套件</Button>
@@ -53,7 +53,7 @@ export default function BaselinesPage() {
         <div className="grid gap-4">
           <Card className="bg-card/80">
             <CardHeader>
-              <CardTitle className="text-base">32K 前缀 TTFT（仿真组合 vs 论文对照）</CardTitle>
+              <CardTitle className="text-base">32K 前缀 TTFT（命名部件组合）</CardTitle>
               <CardDescription>Setup = 句柄安装；Fetch = 32768 × 81.9 KB 在链路上的串行化；Compute 按 32K/15 ms 缩放。</CardDescription>
             </CardHeader>
             <CardContent className="h-[280px]">
@@ -192,7 +192,7 @@ export default function BaselinesPage() {
           <div className="grid gap-4 lg:grid-cols-2">
             <Card className="bg-card/80">
               <CardHeader>
-                <CardTitle className="text-base">系统级能量（论文功率 × tok/s）</CardTitle>
+                <CardTitle className="text-base">系统级能量（功率 × tok/s）</CardTitle>
               </CardHeader>
               <CardContent className="space-y-2 text-sm">
                 {data.energy.map((e) => (

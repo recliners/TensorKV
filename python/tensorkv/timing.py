@@ -1,19 +1,17 @@
-"""First-principles timing for the software replica.
-
-FPGA wall-clock numbers from the paper stay in ``constants.PAPER_*``.
-These helpers compose serialization delay, SRAM/HBM pipeline time, and
-attention compute scaled from the paper's 32K-token 15 ms kernel.
-"""
+"""Named-part timing: serialization, SRAM/HBM pipeline, prefill vs decode compute."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
 from .constants import (
+    COMPUTE_MS_AT_32K,
     DEFAULT_CREDIT_GBPS,
+    HANDLE_INSTALL_NS,
     LINK_GBPS,
-    PAPER_COMPUTE_MS_AT_32K,
-    PAPER_PREFILL_TOKENS,
+    PREFILL_COMPUTE_MS_AT_32K,
+    PREFILL_TOKENS,
+    TOKENS_PER_BLOCK,
 )
 
 
@@ -29,8 +27,18 @@ def serialize_ms(n_bytes: int, gbps: float) -> float:
 
 
 def attention_compute_ms(n_tokens: int) -> float:
-    """Scale the paper's 15 ms / 32K-token kernel to `n_tokens`."""
-    return PAPER_COMPUTE_MS_AT_32K * max(0, n_tokens) / PAPER_PREFILL_TOKENS
+    """First-token / decode attention once KV is resident (15 ms @ 32K)."""
+    return COMPUTE_MS_AT_32K * max(0, n_tokens) / PREFILL_TOKENS
+
+
+def prefill_compute_ms(n_tokens: int) -> float:
+    """Prompt prefill when the prefix is not cached (1200 ms @ 32K)."""
+    return PREFILL_COMPUTE_MS_AT_32K * max(0, n_tokens) / PREFILL_TOKENS
+
+
+def handle_install_ms(n_tokens: int) -> float:
+    n_blocks = max(1, (max(0, n_tokens) + TOKENS_PER_BLOCK - 1) // TOKENS_PER_BLOCK)
+    return n_blocks * HANDLE_INSTALL_NS / 1e6
 
 
 @dataclass
@@ -52,16 +60,19 @@ def ttft_breakdown(
     credit_gbps: float = DEFAULT_CREDIT_GBPS,
     link_gbps: float = LINK_GBPS,
 ) -> TTFTParts:
-    """Compose TTFT from control RTT + credit-shaped gather + local compute.
+    """Compose TTFT from handle install + credit-shaped gather + compute.
 
-    Prefix hit: PROBE returns handles only (no HBM); compute covers the suffix.
-    Prefix miss: local prefill of the whole prompt, then gather.
+    Prefix hit: PROBE returns handles; setup is 18 ms-scaled handle install;
+    compute is the resident-KV first-token kernel over the full context.
+    Prefix miss: whole-prompt prefill (1200 ms @ 32K), then gather.
     """
-    descriptor = 64
-    setup_ms = serialize_ms(descriptor, link_gbps) + probe_latency_ns / 1e6
+    context_tokens = prefix_tokens + max(0, local_tokens) if prefix_hit else max(prefix_tokens, local_tokens)
+    setup_ms = probe_latency_ns / 1e6
     if prefix_hit:
-        setup_ms += serialize_ms(max(1, prefix_tokens) * 8, link_gbps)
-    compute_ms = attention_compute_ms(local_tokens)
+        setup_ms += handle_install_ms(prefix_tokens)
+        compute_ms = attention_compute_ms(max(context_tokens, prefix_tokens))
+    else:
+        compute_ms = prefill_compute_ms(max(local_tokens, prefix_tokens, 1))
     fetch_ms = serialize_ms(gathered_bytes, credit_gbps) + get_latency_ns / 1e6
     total = setup_ms + fetch_ms + compute_ms
     return TTFTParts(setup_ms, fetch_ms, compute_ms, total)

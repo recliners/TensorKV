@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   CartesianGrid,
   Legend,
@@ -36,6 +36,10 @@ export default function IsolationPage() {
     setRows((["fifo", "qos", "pacing", "both"] as const).map((p) => simulateNoisyNeighbor(p)));
   };
 
+  useEffect(() => {
+    run();
+  }, []);
+
   const chart = useMemo(() => {
     if (!rows) return [];
     const n = rows[0].series.length;
@@ -50,7 +54,9 @@ export default function IsolationPage() {
     <SiteShell>
       <h1 className="text-2xl font-semibold tracking-tight">接收端信用整形与 QoS</h1>
       <p className="mt-2 mb-6 max-w-3xl text-sm text-muted-foreground">
-        Tenant A 持续发 GET，Tenant B 在 10–20 秒用第二条 100 GbE 灌入 PUT。ToR 是浅缓冲 FIFO：线速 PUT 会把后到的 GET 挤掉，超时 200 ms。信用整形把 PUT 压到 40 Gbps，入向不再过载。QoS 只在存储节点（GET 优先、避免队头阻塞），救不回已经在 ToR 丢掉的请求。延迟由链路串行化、FPGA 流水线占用和 RTO 组成，没有按策略写死的附加值。
+        Tenant A 持续发 GET，Tenant B 在 10–20 秒灌入 PUT。四档由命名部件分开，不是按策略写死的附加值：FIFO 在浅 ToR
+        丢掉 GET → 200 ms RTO；QoS 优先准入 GET，但仍等满载写引擎 400 MB / 80 Gbps = 40 ms；整形把 PUT 压到 40 Gbps
+        GEMV 片 = 15 ms HOL；两者叠加后只付 214 token × 81.9 KB 在 40 Gbps 上的 gather ≈ 3.5 ms。
       </p>
       <Button onClick={run}>运行吵闹邻居实验</Button>
       <div className="mt-6 grid gap-4 md:grid-cols-4">
@@ -65,7 +71,7 @@ export default function IsolationPage() {
                 {r.interferenceP99.toFixed(1)} ms
               </div>
               <p className="mt-1 text-xs text-muted-foreground">
-                全程 P99 {r.p99.toFixed(1)} ms · 丢包 {r.drops}
+                静默 P99 {r.quietP99.toFixed(1)} ms · GET 丢 {r.getDrops} · PUT 丢 {r.putDrops}
               </p>
             </CardContent>
           </Card>
@@ -81,7 +87,7 @@ export default function IsolationPage() {
               <LineChart data={chart}>
                 <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.85 0.04 200 / 15%)" />
                 <XAxis dataKey="t" tickFormatter={(v) => `${v}s`} stroke="#94a3b8" />
-                <YAxis scale="log" domain={[0.0001, 400]} stroke="#94a3b8" />
+                <YAxis scale="log" domain={[1, 400]} stroke="#94a3b8" />
                 <Tooltip
                   contentStyle={{ background: "#0f172a", border: "1px solid #334155" }}
                   formatter={(v) => [`${v} ms`, ""]}
@@ -93,7 +99,7 @@ export default function IsolationPage() {
               </LineChart>
             </ResponsiveContainer>
           ) : (
-            <p className="text-sm text-muted-foreground">运行后绘制 30 秒轨迹。纵轴是受害 GET 延迟（对数，毫秒）；干扰段 FIFO/仅 QoS 会跳到 200 ms RTO。</p>
+            <p className="text-sm text-muted-foreground">运行后绘制 30 秒轨迹。纵轴是受害 GET 延迟（对数，毫秒）：静默段约 3.5 ms，干扰段四档应分成 200 / 40 / 15 / 3.5。</p>
           )}
         </CardContent>
       </Card>

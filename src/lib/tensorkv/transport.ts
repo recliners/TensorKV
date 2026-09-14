@@ -1,7 +1,6 @@
 import {
   DEFAULT_CREDIT_GBPS,
   DRR_QUANTUM_BYTES,
-  FAST_PATH_HBM_HIT_NS,
   HIGH_PRIORITY_OPCODES,
   LINK_GBPS,
 } from "./types";
@@ -127,15 +126,31 @@ export type IsolationResult = {
   p50: number;
   p99: number;
   drops: number;
+  getDrops: number;
+  putDrops: number;
   interferenceP99: number;
+  interferenceP50: number;
+  quietP99: number;
+  parts: Record<string, number>;
 };
 
 const PKT_BYTES = 4096;
 const RTO_MS = 200;
+const TOR_BUFFER_PACKETS = 32;
+const HBM_WRITE_GBPS = 80;
+const DEVICE_PUT_BUFFER_BYTES = 400_000_000;
+const GEMV_SLICE_MS = 15;
+const ISOLATION_GET_TOKENS = 214;
+const ISOLATION_GET_BYTES = ISOLATION_GET_TOKENS * 81920;
 
 function packetsPerTick(gbps: number, tickUs: number, pktBytes = PKT_BYTES) {
   const bytesPerUs = (gbps * 1e9) / 8 / 1e6;
   return (bytesPerUs * tickUs) / pktBytes;
+}
+
+function serializeMs(nBytes: number, gbps: number) {
+  if (nBytes <= 0 || gbps <= 0) return 0;
+  return (nBytes * 8) / gbps / 1e6;
 }
 
 function percentile(xs: number[], p: number) {
@@ -151,7 +166,7 @@ export function simulateNoisyNeighbor(
   tickUs = 50,
   interferenceStartS = 10,
   interferenceEndS = 20,
-  switchBufferPackets = 32,
+  switchBufferPackets = TOR_BUFFER_PACKETS,
   creditGbps = DEFAULT_CREDIT_GBPS,
   getPeriodUs = 100,
   linkGbps = LINK_GBPS,
@@ -160,17 +175,22 @@ export function simulateNoisyNeighbor(
   const usePacing = policy === "pacing" || policy === "both";
   const cap = packetsPerTick(linkGbps, tickUs);
   const paced = packetsPerTick(creditGbps, tickUs);
+  const hbmDrain = packetsPerTick(HBM_WRITE_GBPS, tickUs) * PKT_BYTES;
   const nTicks = Math.floor((durationS * 1e6) / tickUs);
   const startI = Math.floor((interferenceStartS * 1e6) / tickUs);
   const endI = Math.floor((interferenceEndS * 1e6) / tickUs);
   const getEvery = Math.max(1, Math.round(getPeriodUs / tickUs));
 
   let switchQ = 0;
-  let drops = 0;
+  let getDrops = 0;
+  let putDrops = 0;
+  let devicePutBytes = 0;
   const victim: number[] = [];
   const interference: number[] = [];
+  const quiet: number[] = [];
   const series: IsolationPoint[] = [];
-  const serial = (PKT_BYTES * 8) / (linkGbps * 1e6);
+  const gatherMs = serializeMs(ISOLATION_GET_BYTES, creditGbps);
+  const deviceHolCapMs = serializeMs(DEVICE_PUT_BUFFER_BYTES, HBM_WRITE_GBPS);
   const sampleEvery = Math.max(1, Math.floor(nTicks / 400));
 
   for (let t = 0; t < nTicks; t++) {
@@ -180,23 +200,41 @@ export function simulateNoisyNeighbor(
     const offered = putRate + getRate;
     const slack = cap + (switchBufferPackets - switchQ);
     const overflow = Math.max(0, offered - slack);
+
+    let getDrop = 0;
+    let putDrop = 0;
+    if (overflow > 0) {
+      if (useQos) {
+        putDrop = Math.min(putRate, overflow);
+        getDrop = Math.min(getRate, overflow - putDrop);
+      } else {
+        getDrop = Math.min(getRate, overflow);
+        putDrop = Math.min(putRate, overflow - getDrop);
+      }
+    }
+
+    const admittedPut = Math.max(0, putRate - putDrop);
     const admitted = offered - overflow;
     switchQ = Math.min(switchBufferPackets, Math.max(0, switchQ + admitted - cap));
-    drops += overflow;
-    const getDrop = overflow > 0 ? Math.min(getRate, overflow) : 0;
+    getDrops += getDrop;
+    putDrops += putDrop;
+
+    devicePutBytes = Math.min(DEVICE_PUT_BUFFER_BYTES, devicePutBytes + admittedPut * PKT_BYTES);
+    devicePutBytes = Math.max(0, devicePutBytes - hbmDrain);
+    const deviceHolMs = serializeMs(devicePutBytes, HBM_WRITE_GBPS);
 
     if (getRate > 0) {
       let lat: number;
       if (getDrop >= getRate) lat = RTO_MS;
-      else {
-        const holMs = useQos ? 0 : putRate * (FAST_PATH_HBM_HIT_NS / 1e6);
-        lat = serial + holMs;
-      }
+      else if (inBurst && !usePacing) lat = Math.max(deviceHolMs, deviceHolCapMs * 0.25);
+      else if (inBurst && usePacing && !useQos) lat = GEMV_SLICE_MS;
+      else lat = gatherMs;
       victim.push(lat);
       if (inBurst) interference.push(lat);
+      else quiet.push(lat);
     }
     if (t % sampleEvery === 0) {
-      series.push({ t: (t * tickUs) / 1e6, latency: victim.length ? victim[victim.length - 1] : serial });
+      series.push({ t: (t * tickUs) / 1e6, latency: victim.length ? victim[victim.length - 1] : gatherMs });
     }
   }
 
@@ -205,8 +243,22 @@ export function simulateNoisyNeighbor(
     series,
     p50: percentile(victim, 50),
     p99: percentile(victim, 99),
-    drops: Math.trunc(drops),
+    drops: Math.trunc(getDrops + putDrops),
+    getDrops: Math.trunc(getDrops),
+    putDrops: Math.trunc(putDrops),
     interferenceP99: percentile(interference.length ? interference : victim, 99),
+    interferenceP50: percentile(interference.length ? interference : victim, 50),
+    quietP99: percentile(quiet.length ? quiet : victim, 99),
+    parts: {
+      rtoMs: RTO_MS,
+      deviceHolMs: deviceHolCapMs,
+      gemvSliceMs: GEMV_SLICE_MS,
+      gatherMs,
+      hbmWriteGbps: HBM_WRITE_GBPS,
+      devicePutBufferBytes: DEVICE_PUT_BUFFER_BYTES,
+      isolationGetBytes: ISOLATION_GET_BYTES,
+      creditGbps,
+    },
   };
 }
 
@@ -218,14 +270,17 @@ export type IncastResult = {
   destGbps: number;
   drops: number;
   overflowBytes: number;
+  gpuDrops: number;
+  gpuOverflowBytes: number;
 };
 
-export function simulateAttentionIncast(opts?: { paced?: boolean; creditGbps?: number }): IncastResult {
+export function simulateAttentionIncast(opts?: { paced?: boolean; creditGbps?: number; gemvGbps?: number }): IncastResult {
   const nSources = 16;
   const totalBytes = 128 * 1024;
   const destGbps = LINK_GBPS;
   const paced = opts?.paced ?? true;
   const creditGbps = opts?.creditGbps ?? DEFAULT_CREDIT_GBPS;
+  const gemvGbps = opts?.gemvGbps ?? DEFAULT_CREDIT_GBPS;
   const arrivalGbps = paced ? Math.min(creditGbps, destGbps) : nSources * destGbps;
   const perSrc = totalBytes / nSources;
   const burstS = (perSrc * 8) / destGbps / 1e9;
@@ -233,6 +288,9 @@ export function simulateAttentionIncast(opts?: { paced?: boolean; creditGbps?: n
   const drained = (destGbps * 1e9) / 8 * burstS;
   const bufferBytes = 8 * 4096;
   const overflow = Math.max(0, arrived - drained - bufferBytes);
+  const transferS = (totalBytes * 8) / (Math.max(arrivalGbps, 1e-9) * 1e9);
+  const gpuDrained = (gemvGbps * 1e9) / 8 * transferS;
+  const gpuOverflow = Math.max(0, totalBytes - gpuDrained - 8 * 4096);
   return {
     nSources,
     totalBytes,
@@ -241,5 +299,7 @@ export function simulateAttentionIncast(opts?: { paced?: boolean; creditGbps?: n
     destGbps,
     drops: overflow > 0 ? Math.trunc(overflow / 4096) : 0,
     overflowBytes: overflow,
+    gpuDrops: gpuOverflow > 0 ? Math.trunc(gpuOverflow / 4096) : 0,
+    gpuOverflowBytes: gpuOverflow,
   };
 }

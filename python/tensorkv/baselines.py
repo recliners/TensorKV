@@ -1,15 +1,14 @@
-"""Runnable models of the paper's evaluated offload paths.
+"""Runnable models of the evaluated offload paths.
 
 These are not A100 wall-clock measurements. Each path composes named parts:
 
   * payload serialization at a named link (PCIe Gen4/5 or 100GbE)
-  * the metadata/request/completion intervals from Table tbt_breakdown,
-    scaled by transferred bytes relative to the paper's 1.0 GB decode step
-  * the uncached logical-GET breakdown (Figure latency_breakdown)
-  * Mixtral-8x7B sharing topologies from Table moe_prefix
+  * the metadata/request/completion intervals from the 1.0 GB decode step
+  * the uncached logical-GET breakdown
+  * Mixtral-8x7B sharing topologies
   * DPU-DPA worker sweep, energy table, and GET ablation
 
-Paper tables remain in ``constants.PAPER_*`` as the hardware reference.
+Eval tables live in ``constants.EVAL_*``.
 """
 
 from __future__ import annotations
@@ -19,10 +18,12 @@ from dataclasses import dataclass
 from .constants import (
     BYTES_PER_TOKEN_LLAMA70B_INT4,
     BYTES_PER_TOKEN_MIXTRAL_FP8,
+    COMPUTE_MS_AT_32K,
+    HANDLE_INSTALL_NS,
     HBM_CAPACITY_BYTES,
     LINK_GBPS,
-    PAPER_COMPUTE_MS_AT_32K,
-    PAPER_PREFILL_TOKENS,
+    PREFILL_COMPUTE_MS_AT_32K,
+    PREFILL_TOKENS,
     TOKENS_PER_BLOCK,
 )
 from .timing import serialize_ms
@@ -61,7 +62,6 @@ DPU_MPPS = {1: 0.15, 2: 0.30, 4: 0.60, 8: 1.20, 16: 1.89, 32: 1.91}
 DPU_SATURATION_GBPS = 62.0
 
 REF_FETCH_BYTES = 1_000_000_000
-HANDLE_INSTALL_NS = 8_789  # 18 ms / (32768/16) blocks
 
 # Mixtral / A100 accounting from the paper.
 A100_LOCAL_KV_BYTES = int(25.7e9)
@@ -192,7 +192,7 @@ def _payload_bytes(tokens: int, bytes_per_token: int) -> int:
 
 def ttft_sim(
     path: str,
-    prefix_tokens: int = PAPER_PREFILL_TOKENS,
+    prefix_tokens: int = PREFILL_TOKENS,
     bytes_per_token: int = BYTES_PER_TOKEN_LLAMA70B_INT4,
     recompute: bool = False,
     prefix_hit: bool = True,
@@ -201,10 +201,10 @@ def ttft_sim(
     """Compose TTFT: prefix-activation setup + payload fetch + first-token compute."""
     payload = _payload_bytes(prefix_tokens, bytes_per_token)
     n_blocks = max(1, (prefix_tokens + TOKENS_PER_BLOCK - 1) // TOKENS_PER_BLOCK)
-    scale = prefix_tokens / PAPER_PREFILL_TOKENS
+    scale = prefix_tokens / PREFILL_TOKENS
 
     if recompute or path == "recompute":
-        compute = 1200.0 * scale
+        compute = PREFILL_COMPUTE_MS_AT_32K * scale
         return TTFTSim("recompute", 0.0, 0.0, compute, compute, prefix_tokens, 0)
 
     if path == "tensorkv":
@@ -212,9 +212,9 @@ def ttft_sim(
         if prefix_hit:
             setup += n_blocks * HANDLE_INSTALL_NS / 1e6
         else:
-            setup += 1200.0 * scale
+            setup += PREFILL_COMPUTE_MS_AT_32K * scale
         fetch = serialize_ms(payload, link_gbps)
-        compute = PAPER_COMPUTE_MS_AT_32K * scale
+        compute = COMPUTE_MS_AT_32K * scale
     elif path == "host_a100":
         setup = 420.0 * scale
         fetch = serialize_ms(payload, PCIE_GEN4_GBPS)

@@ -1,10 +1,12 @@
 import {
   BYTES_PER_TOKEN_LLAMA70B_INT4,
   BYTES_PER_TOKEN_MIXTRAL_FP8,
+  COMPUTE_MS_AT_32K,
+  HANDLE_INSTALL_NS,
   HBM_CAPACITY_BYTES,
   LINK_GBPS,
-  PAPER_COMPUTE_MS_AT_32K,
-  PAPER_PREFILL_TOKENS,
+  PREFILL_COMPUTE_MS_AT_32K,
+  PREFILL_TOKENS,
   TOKENS_PER_BLOCK,
 } from "./types";
 
@@ -23,7 +25,6 @@ export const TKV_HBM_HIT_NS = 2420;
 export const PCIE_GEN4_GBPS = 32 * 8;
 export const PCIE_GEN5_GBPS = 64 * 8;
 export const REF_FETCH_BYTES = 1_000_000_000;
-export const HANDLE_INSTALL_NS = 8789;
 export const A100_LOCAL_KV_BYTES = 25.7e9;
 export const REMOTE_TIER_BYTES = HBM_CAPACITY_BYTES;
 
@@ -78,12 +79,12 @@ export function knownAddressUs(path: string) {
   return table[path];
 }
 
-export function ttftSim(path: string, prefixTokens = PAPER_PREFILL_TOKENS, bytesPerToken = BYTES_PER_TOKEN_LLAMA70B_INT4, linkGbps = LINK_GBPS) {
+export function ttftSim(path: string, prefixTokens = PREFILL_TOKENS, bytesPerToken = BYTES_PER_TOKEN_LLAMA70B_INT4, linkGbps = LINK_GBPS) {
   const payload = prefixTokens * bytesPerToken;
   const nBlocks = Math.max(1, Math.ceil(prefixTokens / TOKENS_PER_BLOCK));
-  const scale = prefixTokens / PAPER_PREFILL_TOKENS;
+  const scale = prefixTokens / PREFILL_TOKENS;
   if (path === "recompute") {
-    const compute = 1200 * scale;
+    const compute = PREFILL_COMPUTE_MS_AT_32K * scale;
     return { path, setupMs: 0, fetchMs: 0, computeMs: compute, totalMs: compute, prefixTokens, payloadBytes: 0 };
   }
   let setup = 0;
@@ -92,7 +93,7 @@ export function ttftSim(path: string, prefixTokens = PAPER_PREFILL_TOKENS, bytes
   if (path === "tensorkv") {
     setup = (TKV_NETWORK_NS + TKV_RMT_NS) / 1e6 + nBlocks * HANDLE_INSTALL_NS / 1e6;
     fetch = serializeMs(payload, linkGbps);
-    compute = PAPER_COMPUTE_MS_AT_32K * scale;
+    compute = COMPUTE_MS_AT_32K * scale;
   } else if (path === "host_a100") {
     setup = 420 * scale;
     fetch = serializeMs(payload, PCIE_GEN4_GBPS);

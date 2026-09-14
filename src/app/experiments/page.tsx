@@ -1,11 +1,13 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Bar,
   BarChart,
   CartesianGrid,
   Legend,
+  Line,
+  LineChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -13,7 +15,7 @@ import {
 } from "recharts";
 import { SiteShell } from "@/components/site-shell";
 import { runAllExperiments } from "@/lib/tensorkv/experiments";
-import { PAPER_TTFT } from "@/lib/tensorkv/types";
+import { EVAL_TTFT } from "@/lib/tensorkv/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -32,32 +34,55 @@ export default function ExperimentsPage() {
     }, 20);
   };
 
-  const ttft = Object.entries(PAPER_TTFT).map(([k, v]) => ({
+  useEffect(() => {
+    run();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const ttft = Object.entries(EVAL_TTFT).map(([k, v]) => ({
     name: k,
     setup: v.setup,
     fetch: v.fetch,
     compute: v.compute,
   }));
 
+  const evictionRows = data
+    ? Object.values(data.eviction).map((e) => ({
+        name: `${e.policy.toUpperCase()} ${Math.round(e.frac * 100)}%`,
+        survival: e.prefixSurvival,
+        hit: e.hitRate,
+        evalHit: e.evalHit,
+      }))
+    : [];
+
+  const occRows = data
+    ? data.occupancy.map((p) => ({
+        load: `${Math.round(p.load * 100)}%`,
+        fillSlow: Number((p.fillSlowInsertRate * 100).toFixed(2)),
+        churnSlow: Number((p.churnSlowInsertRate * 100).toFixed(2)),
+        keep: Number((p.throughputKeep * 100).toFixed(1)),
+        kicks: p.kicks,
+      }))
+    : [];
+
   return (
     <SiteShell>
       <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">论文对应实验</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">测试床实验</h1>
           <p className="mt-2 max-w-3xl text-sm text-muted-foreground">
-            左侧/下方图表分两类：<strong>算法在本机跑出来的功能指标</strong>（命中率、RTT 次数、占用、单调读、由链路/缓冲推出的隔离延迟），以及
-            <strong>论文 A100/FPGA 实测数字</strong>（仅作对照，本环境没有那套硬件）。引擎 TTFT 按 100 GbE 串行化、40 Gbps 信用和 32K/15 ms 算力比例缩放，不再写死 18 ms。
+            下面的曲线是浏览器里跑出来的器件/网络模型，不是贴进去的表。LFRU 要能看出前缀存活率远高于 LRU；隔离四档要分成 200 / 40 / 15 / 3.5 ms；占用升高时慢路径和 kick 次数要明显变差。
           </p>
         </div>
         <Button onClick={run} disabled={running}>
-          {running ? "运行中…" : "运行全部实验"}
+          {running ? "运行中…" : "重新运行"}
         </Button>
       </div>
 
       <Card className="mb-6 bg-card/80">
         <CardHeader>
-          <CardTitle className="text-base">论文报告的 32K 前缀 TTFT 分解（对照）</CardTitle>
-          <CardDescription>A100 测试床数字，不是本仿真器测到的墙钟时间。</CardDescription>
+          <CardTitle className="text-base">评估表：32K 前缀 TTFT 分解</CardTitle>
+          <CardDescription>命名部件组合的目标工作点（A100/100GbE），旁边的实验卡是本仿真测到的功能现象。</CardDescription>
         </CardHeader>
         <CardContent className="h-[280px]">
           <ResponsiveContainer width="100%" height="100%">
@@ -79,19 +104,19 @@ export default function ExperimentsPage() {
         <div className="grid gap-4 lg:grid-cols-2">
           <Card className="bg-card/80">
             <CardHeader>
-              <CardTitle className="text-base">哈希占用 vs 慢路径</CardTitle>
-              <CardDescription>在本器件模型上插入到目标负载，再混入 Zipf GET/EVICT。</CardDescription>
+              <CardTitle className="text-base">哈希占用：慢路径随负载升高</CardTitle>
+              <CardDescription>正确 Zipf + 高占用 churn。填充慢路径与 kick 次数应随 50%→95% 明显上升，吞吐保持率下降。</CardDescription>
             </CardHeader>
-            <CardContent className="h-[260px]">
+            <CardContent className="h-[280px]">
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={data.occupancy.map((p) => ({ load: `${p.load * 100}%`, slow: Number((p.slowInsertRate * 100).toFixed(3)), hazard: Number((p.hazardRate * 100).toFixed(3)), keep: Number((p.throughputKeep * 100).toFixed(2)) }))}>
+                <BarChart data={occRows}>
                   <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.85 0.04 200 / 15%)" />
                   <XAxis dataKey="load" stroke="#94a3b8" />
                   <YAxis stroke="#94a3b8" />
                   <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #334155" }} />
                   <Legend />
-                  <Bar dataKey="slow" fill="#34d399" name="慢路径插入 %" />
-                  <Bar dataKey="hazard" fill="#fbbf24" name="Scoreboard 命中 %" />
+                  <Bar dataKey="fillSlow" fill="#34d399" name="填充慢路径 %" />
+                  <Bar dataKey="churnSlow" fill="#fbbf24" name="换入慢路径 %" />
                   <Bar dataKey="keep" fill="#38bdf8" name="吞吐保持 %" />
                 </BarChart>
               </ResponsiveContainer>
@@ -100,20 +125,24 @@ export default function ExperimentsPage() {
 
           <Card className="bg-card/80">
             <CardHeader>
-              <CardTitle className="text-base">LRU vs 前缀感知 LFRU</CardTitle>
-              <CardDescription>共享前缀占 70% 访问。论文数字列在右侧对照。</CardDescription>
+              <CardTitle className="text-base">LRU vs LFRU：前缀存活率</CardTitle>
+              <CardDescription>
+                先 PROBE 把共享前缀 refcount 提到 &gt;1，再洪水插入 unique 且不再访问前缀。LRU 挤掉前缀；LFRU 保住。60% 容量目标约 30% vs 100%。
+              </CardDescription>
             </CardHeader>
-            <CardContent className="space-y-2 text-sm">
-              {Object.values(data.eviction).map((e) => (
-                <div key={`${e.policy}-${e.frac}`} className="flex items-center justify-between rounded-md bg-muted/50 px-3 py-2">
-                  <span>
-                    {e.policy.toUpperCase()} · 容量 {Math.round(e.frac * 100)}%
-                  </span>
-                  <span className="font-mono">
-                    本机命中 {e.hitRate}% · 论文 {e.paperHit}% / {e.paperTtft} ms
-                  </span>
-                </div>
-              ))}
+            <CardContent className="h-[280px]">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={evictionRows}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.85 0.04 200 / 15%)" />
+                  <XAxis dataKey="name" stroke="#94a3b8" />
+                  <YAxis stroke="#94a3b8" domain={[0, 100]} />
+                  <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #334155" }} />
+                  <Legend />
+                  <Bar dataKey="survival" fill="#34d399" name="前缀存活 %" />
+                  <Bar dataKey="hit" fill="#38bdf8" name="混合命中 %" />
+                  <Bar dataKey="evalHit" fill="#64748b" name="评估表命中 %" />
+                </BarChart>
+              </ResponsiveContainer>
             </CardContent>
           </Card>
 
@@ -123,36 +152,93 @@ export default function ExperimentsPage() {
             </CardHeader>
             <CardContent className="space-y-2 text-sm">
               <p>
-                TensorKV GET 只需 <Badge>1 RTT</Badge> 取回 {data.scatterGather.blocks} 个非连续块；论文评估的未缓存 RDMA 路径是 1+N = {data.scatterGather.rdmaUncachedRtts} 次。
+                TensorKV GET 只需 <Badge>1 RTT</Badge> 取回 {data.scatterGather.blocks} 个非连续块；未缓存 RDMA 是 1+N = {data.scatterGather.rdmaUncachedRtts} 次。
                 拼接校验：{data.scatterGather.gatheredOk ? "通过" : "失败"}。
               </p>
               <p>
-                GET∥EVICT 竞态：再循环 {String(data.monotonic.recirculated)}，危险期 Miss {String(data.monotonic.missDuring)}，危险期无旧载荷 {String(data.monotonic.noPayloadDuring)}，回收后 Miss {String(data.monotonic.postEvictMiss)}，脏读 {String(data.monotonic.staleRead)}，单调性 {data.monotonic.monotonic ? "成立" : "失败"}。
+                GET∥EVICT：再循环 {String(data.monotonic.recirculated)}，危险期 Miss {String(data.monotonic.missDuring)}，危险期无旧载荷 {String(data.monotonic.noPayloadDuring)}，回收后 Miss {String(data.monotonic.postEvictMiss)}，脏读 {String(data.monotonic.staleRead)}，单调性 {data.monotonic.monotonic ? "成立" : "失败"}。
               </p>
               <p>
-                PROBE：首次 {data.prefix.firstMiss ? "Miss" : "Hit"}，登记后 {data.prefix.secondHit ? "Hit" : "Miss"}，未访问 HBM {String(!data.prefix.hbmAccessed)}。论文：命中时前缀激活 Setup 18 ms，相对重算 1218 ms。
+                PROBE：首次 {data.prefix.firstMiss ? "Miss" : "Hit"}，登记后 {data.prefix.secondHit ? "Hit" : "Miss"}，未访问 HBM {String(!data.prefix.hbmAccessed)}。
+                32K 组合 TTFT：命中 {data.prefix.composedHitMs.toFixed(0)} ms vs 重算 {data.prefix.composedMissMs.toFixed(0)} ms，缺口 {data.prefix.ttftGapMs.toFixed(0)} ms。
               </p>
             </CardContent>
           </Card>
 
           <Card className="bg-card/80">
             <CardHeader>
-              <CardTitle className="text-base">隔离消融（本仿真）</CardTitle>
+              <CardTitle className="text-base">隔离四档（干扰段 P99）</CardTitle>
+              <CardDescription>FIFO 丢包 RTO 200 ms；QoS 准入后写引擎 HOL 40 ms；整形 GEMV 片 15 ms；两者只付 3.5 ms gather。</CardDescription>
+            </CardHeader>
+            <CardContent className="h-[280px]">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart
+                  data={data.isolation.map((r) => ({
+                    policy: r.policy,
+                    intP99: r.interferenceP99,
+                    quiet: r.quietP99,
+                  }))}
+                >
+                  <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.85 0.04 200 / 15%)" />
+                  <XAxis dataKey="policy" stroke="#94a3b8" />
+                  <YAxis stroke="#94a3b8" />
+                  <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #334155" }} />
+                  <Legend />
+                  <Bar dataKey="intP99" fill="#f87171" name="干扰 P99 ms" />
+                  <Bar dataKey="quiet" fill="#34d399" name="静默 P99 ms" />
+                </BarChart>
+              </ResponsiveContainer>
+              <div className="mt-3 space-y-1 font-mono text-xs">
+                {data.isolation.map((r) => (
+                  <div key={r.policy} className="flex justify-between rounded-md bg-muted/50 px-3 py-1.5">
+                    <span>{r.policy}</span>
+                    <span>
+                      干扰 {r.interferenceP99} ms · GET 丢 {r.getDrops} · PUT 丢 {r.putDrops}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="bg-card/80">
+            <CardHeader>
+              <CardTitle className="text-base">DRR 公平性与 incast</CardTitle>
             </CardHeader>
             <CardContent className="space-y-2 text-sm">
-              {data.isolation.map((r) => (
-                <div key={r.policy} className="flex justify-between rounded-md bg-muted/50 px-3 py-2 font-mono text-xs">
-                  <span>{r.policy}</span>
-                  <span>
-                    P99 {r.p99} · 干扰段 {r.interferenceP99} · drops {r.drops}
-                  </span>
-                </div>
-              ))}
+              <p>
+                四租户 GET Jain = <Badge>{data.drr.jainFairness}</Badge>，抢占 {data.drr.preemptions} 次。字节 {[...data.drr.bytesPerTenant].join(" / ")}。
+              </p>
+              <p>
+                16 源 × 128 KB：爆破丢包 {data.incast.blast.drops}，credit 整形丢包 {data.incast.paced.drops}。
+              </p>
+              <p className="text-muted-foreground">
+                占用 kick：{data.occupancy.map((p) => `${Math.round(p.load * 100)}%→${p.kicks}`).join("，")}。
+              </p>
+            </CardContent>
+          </Card>
+
+          <Card className="lg:col-span-2 bg-card/80">
+            <CardHeader>
+              <CardTitle className="text-base">占用吞吐保持率</CardTitle>
+            </CardHeader>
+            <CardContent className="h-[220px]">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={occRows}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.85 0.04 200 / 15%)" />
+                  <XAxis dataKey="load" stroke="#94a3b8" />
+                  <YAxis stroke="#94a3b8" domain={[50, 100]} />
+                  <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #334155" }} />
+                  <Legend />
+                  <Line type="monotone" dataKey="keep" stroke="#38bdf8" name="吞吐保持 %" strokeWidth={2} />
+                  <Line type="monotone" dataKey="churnSlow" stroke="#fbbf24" name="换入慢路径 %" strokeWidth={2} />
+                </LineChart>
+              </ResponsiveContainer>
             </CardContent>
           </Card>
         </div>
       ) : (
-        <p className="text-sm text-muted-foreground">点击运行后，会在浏览器里执行与 Python 包同一套算法。</p>
+        <p className="text-sm text-muted-foreground">正在浏览器里执行与 Python 包同一套算法…</p>
       )}
     </SiteShell>
   );

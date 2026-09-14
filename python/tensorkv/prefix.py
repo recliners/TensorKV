@@ -67,3 +67,12 @@ class PrefixIndex:
 
     def drop(self, prompt_hash: int) -> None:
         self.table.pop(prompt_hash, None)
+
+    def forget_block(self, prompt_hash: int, block_id: int) -> None:
+        """Drop one cached prefix block; keep the record until the span is empty."""
+        rec = self.table.get(prompt_hash)
+        if rec is None:
+            return
+        rec.block_ids = [b for b in rec.block_ids if b != block_id]
+        if not rec.block_ids:
+            self.drop(prompt_hash)

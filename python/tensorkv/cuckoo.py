@@ -47,6 +47,7 @@ class CuckooTable:
         self.hbm_key_verifies = 0
         self.lookups = 0
         self.hits = 0
+        self.kicks = 0
 
     def key_of(self, phys: int) -> int | None:
         return self._hbm.get(phys)
@@ -132,6 +133,7 @@ class CuckooTable:
         cur_key, cur_phys, cur_tag = key, phys, tag
         cur_bucket = h1
         for _ in range(self.max_kicks):
+            self.kicks += 1
             slot_i = self.rng.randint(0, self.slots_per_bucket - 1)
             victim = self.buckets[cur_bucket][slot_i]
             victim_key = self._slot_key(victim)

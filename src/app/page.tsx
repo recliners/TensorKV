@@ -34,15 +34,15 @@ const PRIMITIVES = [
 ];
 
 const MAP = [
-  { paper: "§ Dual-Path / RMT", code: "CuckooTable + 快路径 GET/PROBE" },
-  { paper: "§ Slow Path 分配器", code: "HierarchicalAllocator（FIFO×64）" },
-  { paper: "§ Consistency", code: "Scoreboard 危险位 + 再循环（不读 payload）" },
-  { paper: "§ Prefix-Aware LFRU", code: "EvictionTracker（refcount>1 保护）" },
-  { paper: "§ Credit + VOQ/DRR", code: "CreditShaper / VirtualOutputQueues" },
-  { paper: "§ Crossbar commit", code: "AtomicCrossbar 1 周期 bank lock" },
-  { paper: "§ Driver 64B 描述符", code: "descriptor.py / libtkv" },
-  { paper: "§ Mixtral / 基线", code: "baselines.py 可组合 TTFT/TBT/OOM" },
-  { paper: "§ 16 源 incast", code: "incast.py 128KB fan-in" },
+  { section: "双路径 / RMT", code: "CuckooTable + 快路径 GET/PROBE" },
+  { section: "慢路径分配器", code: "HierarchicalAllocator（FIFO×64）" },
+  { section: "一致性", code: "Scoreboard 危险位 + 再循环（不读 payload）" },
+  { section: "前缀感知 LFRU", code: "EvictionTracker（refcount>1 保护）" },
+  { section: "Credit + VOQ/DRR", code: "CreditShaper / VirtualOutputQueues" },
+  { section: "Crossbar commit", code: "AtomicCrossbar 1 周期 bank lock" },
+  { section: "64B 描述符", code: "descriptor.py / libtkv" },
+  { section: "Mixtral / 基线", code: "baselines.py 可组合 TTFT/TBT/OOM" },
+  { section: "16 源 incast", code: "incast.py 128KB fan-in" },
 ];
 
 export default function HomePage() {
@@ -51,20 +51,20 @@ export default function HomePage() {
       <section className="mb-10 grid gap-8 lg:grid-cols-[1.2fr_0.8fr]">
         <div>
           <Badge variant="secondary" className="mb-4">
-            软件复现 · 非 FPGA 原型
+            软件实现 · 非 FPGA 原型
           </Badge>
           <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">
             TensorKV：把 KV 元数据放进存储器件
           </h1>
           <p className="mt-4 max-w-2xl text-muted-foreground">
-            这篇论文设计的是面向长上下文 LLM 推理的语义网内 KV 缓存。计算节点提交语义命令，存储器件完成分配、哈希查找、Scatter-Gather、前缀探测与安全回收。本仓库实现了论文描述的全部算法逻辑，并提供可交互演示。
+            面向长上下文 LLM 推理的语义网内 KV 缓存。计算节点提交语义命令，存储器件完成分配、哈希查找、Scatter-Gather、前缀探测与安全回收。本仓库是 TensorKV 自身的软件实现与可交互演示。
           </p>
           <div className="mt-6 flex flex-wrap gap-3">
             <Link href="/playground" className={cn(buttonVariants())}>
               打开四原语工作台 <ArrowRight className="size-4" />
             </Link>
             <Link href="/experiments" className={cn(buttonVariants({ variant: "outline" }))}>
-              跑论文对应实验
+              跑测试床实验
             </Link>
             <Link href="/baselines" className={cn(buttonVariants({ variant: "outline" }))}>
               可运行基线
@@ -84,7 +84,7 @@ export default function HomePage() {
             <p>
               <span className="font-medium text-accent">不能做：</span>
               无法写入你本机的 <code className="rounded bg-muted px-1">C:\\Users\\...\\Desktop\\project</code>
-              （当前环境是云端 Linux 仓库）。也无法在没有 Alveo U280 / A100 的情况下复现 92.8 Gbps 与端到端毫秒数。
+              （当前环境是云端 Linux 仓库）。也无法在没有 Alveo U280 / A100 的情况下测到 92.8 Gbps 与端到端墙钟毫秒数。
             </p>
           </CardContent>
         </Card>
@@ -109,14 +109,14 @@ export default function HomePage() {
         <Card className="bg-card/80">
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-base">
-              <GitBranch className="size-4 text-primary" /> 论文章节 → 代码
+              <GitBranch className="size-4 text-primary" /> 模块 → 代码
             </CardTitle>
           </CardHeader>
           <CardContent>
             <ul className="space-y-2 text-sm">
               {MAP.map((m) => (
-                <li key={m.paper} className="flex justify-between gap-4 border-b border-border/50 py-2 last:border-0">
-                  <span className="text-muted-foreground">{m.paper}</span>
+                <li key={m.section} className="flex justify-between gap-4 border-b border-border/50 py-2 last:border-0">
+                  <span className="text-muted-foreground">{m.section}</span>
                   <span className="font-mono text-xs">{m.code}</span>
                 </li>
               ))}

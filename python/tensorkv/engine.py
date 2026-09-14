@@ -1,6 +1,6 @@
 """Mini PagedAttention serving engine on top of TensorKV.
 
-Mirrors the vLLM integration workflow in the paper:
+PagedAttention integration workflow:
   1. Scheduler: TKV_PROBE before prefill (prefix matching)
   2. Cache engine: TKV_PUT / TKV_EVICT
   3. Worker: TKV_GET (JIT gather into a contiguous attention matrix)

@@ -1,8 +1,8 @@
-"""libtkv: host-side asynchronous driver matching the paper listing.
+"""libtkv: host-side asynchronous driver.
 
 The CPU submits 64-byte semantic descriptors; tensor payloads are not copied
 by the CPU. Completions are polled from a completion queue after Ethernet
-RTT and device execution (paper § Driver / Listing).
+RTT and device execution.
 """
 
 from __future__ import annotations

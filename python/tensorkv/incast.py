@@ -18,6 +18,8 @@ ATTENTION_BYTES = 128 * 1024
 # this; a 32-packet (~128 KB) slice would absorb the whole attention step.
 SHALLOW_BUFFER_PACKETS = 8
 PKT_BYTES = 4096
+# GPU RX queue sitting behind GEMV drain. Credit above the drain fills this.
+GPU_RX_BUFFER_PACKETS = 8
 
 
 @dataclass
@@ -32,6 +34,8 @@ class IncastResult:
     buffer_bytes: int
     overflow_bytes: float
     drops: int
+    gpu_overflow_bytes: float
+    gpu_drops: int
     dest_busy_us: float
     gemv_drain_us: float
 
@@ -68,6 +72,13 @@ def simulate_attention_incast(
     drained = dest_gbps * 1e9 / 8.0 * burst_s
     overflow = max(0.0, arrived - drained - buffer_bytes)
     drops = int(overflow / PKT_BYTES) if overflow > 0 else 0
+    # Bytes that reach the GPU still have to match GEMV drain. Credit > GEMV
+    # does not overflow the ToR (arrival ≤ 100 GbE) but piles up in the RX queue.
+    transfer_s = (total_bytes * 8) / (max(arrival_gbps, 1e-9) * 1e9)
+    gpu_drained = drain * 1e9 / 8.0 * transfer_s
+    gpu_buffer = GPU_RX_BUFFER_PACKETS * PKT_BYTES
+    gpu_overflow = max(0.0, total_bytes - gpu_drained - gpu_buffer)
+    gpu_drops = int(gpu_overflow / PKT_BYTES) if gpu_overflow > 0 else 0
     dest_busy_us = serialize_ms(total_bytes, dest_gbps) * 1000.0
     gemv_drain_us = serialize_ms(total_bytes, drain) * 1000.0
     return IncastResult(
@@ -81,6 +92,8 @@ def simulate_attention_incast(
         buffer_bytes=buffer_bytes,
         overflow_bytes=overflow,
         drops=drops,
+        gpu_overflow_bytes=gpu_overflow,
+        gpu_drops=gpu_drops,
         dest_busy_us=dest_busy_us,
         gemv_drain_us=gemv_drain_us,
     )

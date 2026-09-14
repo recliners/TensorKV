@@ -31,7 +31,7 @@ export default function EnginePage() {
     const p1 = tkv.probe(ph);
     log.push({
       title: "PROBE HIT",
-      detail: `handles=[${p1.handles}] ref=${p1.refcount} hbmAccessed=${p1.hbmAccessed}（论文：跳过重算，TTFT 仍含后续 GET+Attention）`,
+      detail: `handles=[${p1.handles}] ref=${p1.refcount} hbmAccessed=${p1.hbmAccessed}（命中只跳过重算，TTFT 仍含后续 GET+Attention）`,
     });
 
     tkv.putAsync(2, 0, new Uint8Array([7, 7, 7]));
@@ -62,7 +62,7 @@ export default function EnginePage() {
     <SiteShell>
       <h1 className="text-2xl font-semibold tracking-tight">推理引擎工作流</h1>
       <p className="mt-2 mb-6 max-w-3xl text-sm text-muted-foreground">
-        对应论文的 vLLM 集成：调度器做 PROBE，缓存引擎做 PUT/EVICT，Attention 路径做 JIT GET。这里用缩小的 token 块演示同一套控制流。
+        调度器做 PROBE，缓存引擎做 PUT/EVICT，Attention 路径做 JIT GET。这里用缩小的 token 块演示同一套控制流。
       </p>
       <Button onClick={run}>跑一遍共享前缀场景</Button>
       <div className="mt-6 grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">

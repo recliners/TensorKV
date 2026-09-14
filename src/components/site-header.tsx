@@ -27,7 +27,7 @@ export function SiteHeader() {
           <span>
             TensorKV
             <span className="ml-2 hidden text-xs font-normal text-muted-foreground sm:inline">
-              论文算法复现
+              语义网内 KV 缓存
             </span>
           </span>
         </Link>

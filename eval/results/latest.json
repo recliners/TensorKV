@@ -1,0 +1,1197 @@
+{
+  "occupancy": [
+    {
+      "load": 0.5,
+      "fill_slow_insert_rate": 0.00537109375,
+      "churn_slow_insert_rate": 0.017418032786885244,
+      "slow_insert_rate": 0.009259259259259259,
+      "hazard_rate": 0.03753609239653513,
+      "victim_buffer": 0,
+      "kicks": 19,
+      "throughput_keep": 0.9868843612132696,
+      "service_ns": 14712970,
+      "ideal_ns": 14520000,
+      "extra_ns": 192970,
+      "bucket_hist": [
+        123,
+        229,
+        313,
+        243,
+        116
+      ],
+      "zipf_head_share": 0.793
+    },
+    {
+      "load": 0.7,
+      "fill_slow_insert_rate": 0.023718172305545866,
+      "churn_slow_insert_rate": 0.11758989310009718,
+      "slow_insert_rate": 0.04851129363449692,
+      "hazard_rate": 0.0421455938697318,
+      "victim_buffer": 0,
+      "kicks": 222,
+      "throughput_keep": 0.9200722117281326,
+      "service_ns": 15781370,
+      "ideal_ns": 14520000,
+      "extra_ns": 1261370,
+      "bucket_hist": [
+        27,
+        114,
+        237,
+        305,
+        341
+      ],
+      "zipf_head_share": 0.81
+    },
+    {
+      "load": 0.8,
+      "fill_slow_insert_rate": 0.04792429792429793,
+      "churn_slow_insert_rate": 0.2744090441932169,
+      "slow_insert_rate": 0.09978818545540127,
+      "hazard_rate": 0.03598971722365039,
+      "victim_buffer": 0,
+      "kicks": 701,
+      "throughput_keep": 0.8405370406496911,
+      "service_ns": 17274670,
+      "ideal_ns": 14520000,
+      "extra_ns": 2754670,
+      "bucket_hist": [
+        9,
+        60,
+        148,
+        308,
+        499
+      ],
+      "zipf_head_share": 0.814
+    },
+    {
+      "load": 0.9,
+      "fill_slow_insert_rate": 0.08952794357026587,
+      "churn_slow_insert_rate": 0.487551867219917,
+      "slow_insert_rate": 0.17204301075268819,
+      "hazard_rate": 0.04061400703549728,
+      "victim_buffer": 3,
+      "kicks": 2489,
+      "throughput_keep": 0.7500844619900381,
+      "service_ns": 19357820,
+      "ideal_ns": 14520000,
+      "extra_ns": 4837820,
+      "bucket_hist": [
+        2,
+        16,
+        62,
+        233,
+        711
+      ],
+      "zipf_head_share": 0.821
+    },
+    {
+      "load": 0.95,
+      "fill_slow_insert_rate": 0.12002056026728347,
+      "churn_slow_insert_rate": 0.6753246753246753,
+      "slow_insert_rate": 0.22658359293873312,
+      "hazard_rate": 0.03861560647332158,
+      "victim_buffer": 43,
+      "kicks": 6693,
+      "throughput_keep": 0.693566076020956,
+      "service_ns": 20935280,
+      "ideal_ns": 14520000,
+      "extra_ns": 6415280,
+      "bucket_hist": [
+        1,
+        7,
+        41,
+        141,
+        834
+      ],
+      "zipf_head_share": 0.8245
+    }
+  ],
+  "scatter_gather": {
+    "blocks": 8,
+    "tensorkv_rtts": 1,
+    "rdma_uncached_rtts": 9,
+    "rdma_opt_rtts": 1,
+    "gathered_ok": true,
+    "gathered_blocks": 8,
+    "latency_ns": 3370
+  },
+  "monotonic_race": {
+    "recirculated_or_miss_during_hazard": true,
+    "recirculated": true,
+    "miss_during_hazard": true,
+    "no_payload_during_hazard": true,
+    "post_evict_miss": true,
+    "stale_read": false,
+    "monotonic": true
+  },
+  "prefix": {
+    "n_prefix_tokens": 256,
+    "first_prefix_hit": false,
+    "second_prefix_hit": true,
+    "third_prefix_hit": false,
+    "engine_hits": 1,
+    "engine_misses": 2,
+    "skipped_tokens": 256,
+    "eval_setup_ms_on_hit": 0.140625,
+    "eval_recompute_ms": 9.375,
+    "first_ttft_ms": 13.6817,
+    "second_ttft_ms": 4.5087,
+    "ttft_gap_ms": 9.173,
+    "first_ttft_parts": {
+      "setup": 0.0022,
+      "fetch": 4.2313,
+      "compute": 9.4482
+    },
+    "second_ttft_parts": {
+      "setup": 0.1428,
+      "fetch": 4.2478,
+      "compute": 0.1181
+    },
+    "composed_hit_total_ms": 1.9364825,
+    "composed_miss_total_ms": 9.375,
+    "handle_install_ns": 8789
+  },
+  "prefix_32k": {
+    "n_prefix_tokens": 32768,
+    "first_prefix_hit": false,
+    "second_prefix_hit": true,
+    "third_prefix_hit": false,
+    "engine_hits": 1,
+    "engine_misses": 2,
+    "skipped_tokens": 32768,
+    "eval_setup_ms_on_hit": 18.0,
+    "eval_recompute_ms": 1200.0,
+    "first_ttft_ms": 1737.1865,
+    "second_ttft_ms": 570.1175,
+    "ttft_gap_ms": 1167.0691,
+    "first_ttft_parts": {
+      "setup": 0.0022,
+      "fetch": 537.1111,
+      "compute": 1200.0732
+    },
+    "second_ttft_parts": {
+      "setup": 18.002,
+      "fetch": 537.1145,
+      "compute": 15.0009
+    },
+    "composed_hit_total_ms": 247.749186,
+    "composed_miss_total_ms": 1200.0,
+    "handle_install_ns": 8789
+  },
+  "eviction": {
+    "lru_60": {
+      "policy": "lru",
+      "capacity_frac": 0.6,
+      "capacity_blocks": 84,
+      "working_set": 140,
+      "unique_installed": 60,
+      "prefix_survival_pct": 30.0,
+      "prefix_access_hit_pct": 28.14,
+      "hit_rate": 49.88,
+      "weighted_ttft_ms": 918.9,
+      "pages_used": 84,
+      "eval_hit_rate": 30,
+      "eval_ttft_ms": 810
+    },
+    "lfru_60": {
+      "policy": "lfru",
+      "capacity_frac": 0.6,
+      "capacity_blocks": 84,
+      "working_set": 140,
+      "unique_installed": 60,
+      "prefix_survival_pct": 100.0,
+      "prefix_access_hit_pct": 100.0,
+      "hit_rate": 71.12,
+      "weighted_ttft_ms": 263.0,
+      "pages_used": 84,
+      "eval_hit_rate": 78,
+      "eval_ttft_ms": 135
+    },
+    "lru_80": {
+      "policy": "lru",
+      "capacity_frac": 0.8,
+      "capacity_blocks": 112,
+      "working_set": 140,
+      "unique_installed": 60,
+      "prefix_survival_pct": 65.0,
+      "prefix_access_hit_pct": 63.29,
+      "hit_rate": 74.62,
+      "weighted_ttft_ms": 591.0,
+      "pages_used": 112,
+      "eval_hit_rate": 65,
+      "eval_ttft_ms": 245
+    },
+    "lfru_80": {
+      "policy": "lfru",
+      "capacity_frac": 0.8,
+      "capacity_blocks": 112,
+      "working_set": 140,
+      "unique_installed": 60,
+      "prefix_survival_pct": 100.0,
+      "prefix_access_hit_pct": 100.0,
+      "hit_rate": 87.5,
+      "weighted_ttft_ms": 263.0,
+      "pages_used": 112,
+      "eval_hit_rate": 92,
+      "eval_ttft_ms": 42
+    }
+  },
+  "sharegpt": {
+    "lru": {
+      "policy": "lru",
+      "capacity_frac": 0.6,
+      "capacity_blocks": 86,
+      "working_set": 144,
+      "prefix_survival_pct": 16.67,
+      "hit_rate": 52.67,
+      "n_prefixes": 3,
+      "n_sessions": 24
+    },
+    "lfru": {
+      "policy": "lfru",
+      "capacity_frac": 0.6,
+      "capacity_blocks": 86,
+      "working_set": 144,
+      "prefix_survival_pct": 100.0,
+      "hit_rate": 72.5,
+      "n_prefixes": 3,
+      "n_sessions": 24
+    },
+    "lfru_minus_lru_survival": 83.33
+  },
+  "sharegpt_80": {
+    "lru": {
+      "policy": "lru",
+      "capacity_frac": 0.8,
+      "capacity_blocks": 115,
+      "working_set": 144,
+      "prefix_survival_pct": 55.56,
+      "hit_rate": 78.5,
+      "n_prefixes": 3,
+      "n_sessions": 24
+    },
+    "lfru": {
+      "policy": "lfru",
+      "capacity_frac": 0.8,
+      "capacity_blocks": 115,
+      "working_set": 144,
+      "prefix_survival_pct": 100.0,
+      "hit_rate": 85.67,
+      "n_prefixes": 3,
+      "n_sessions": 24
+    },
+    "lfru_minus_lru_survival": 44.44
+  },
+  "isolation": {
+    "fifo": {
+      "p50": 3.51,
+      "p99": 200.0,
+      "drops": 99968,
+      "get_drops": 99968,
+      "put_drops": 0,
+      "interference_p99": 200.0,
+      "interference_p50": 200.0,
+      "quiet_p99": 3.5062,
+      "series_points": 400,
+      "parts": {
+        "rto_ms": 200.0,
+        "device_hol_ms": 40.0,
+        "gemv_slice_ms": 15.0,
+        "gather_ms": 3.506176,
+        "hbm_write_gbps": 80.0,
+        "device_put_buffer_bytes": 400000000.0,
+        "isolation_get_bytes": 17530880.0,
+        "credit_gbps": 40.0
+      }
+    },
+    "qos": {
+      "p50": 3.51,
+      "p99": 39.95,
+      "drops": 99968,
+      "get_drops": 0,
+      "put_drops": 99968,
+      "interference_p99": 39.95,
+      "interference_p50": 39.95,
+      "quiet_p99": 3.5062,
+      "series_points": 400,
+      "parts": {
+        "rto_ms": 200.0,
+        "device_hol_ms": 40.0,
+        "gemv_slice_ms": 15.0,
+        "gather_ms": 3.506176,
+        "hbm_write_gbps": 80.0,
+        "device_put_buffer_bytes": 400000000.0,
+        "isolation_get_bytes": 17530880.0,
+        "credit_gbps": 40.0
+      }
+    },
+    "pacing": {
+      "p50": 3.51,
+      "p99": 15.0,
+      "drops": 0,
+      "get_drops": 0,
+      "put_drops": 0,
+      "interference_p99": 15.0,
+      "interference_p50": 15.0,
+      "quiet_p99": 3.5062,
+      "series_points": 400,
+      "parts": {
+        "rto_ms": 200.0,
+        "device_hol_ms": 40.0,
+        "gemv_slice_ms": 15.0,
+        "gather_ms": 3.506176,
+        "hbm_write_gbps": 80.0,
+        "device_put_buffer_bytes": 400000000.0,
+        "isolation_get_bytes": 17530880.0,
+        "credit_gbps": 40.0
+      }
+    },
+    "both": {
+      "p50": 3.51,
+      "p99": 3.51,
+      "drops": 0,
+      "get_drops": 0,
+      "put_drops": 0,
+      "interference_p99": 3.5062,
+      "interference_p50": 3.5062,
+      "quiet_p99": 3.5062,
+      "series_points": 400,
+      "parts": {
+        "rto_ms": 200.0,
+        "device_hol_ms": 40.0,
+        "gemv_slice_ms": 15.0,
+        "gather_ms": 3.506176,
+        "hbm_write_gbps": 80.0,
+        "device_put_buffer_bytes": 400000000.0,
+        "isolation_get_bytes": 17530880.0,
+        "credit_gbps": 40.0
+      }
+    }
+  },
+  "incast": {
+    "blast": {
+      "n_sources": 16,
+      "total_bytes": 131072,
+      "per_source_bytes": 8192,
+      "paced": false,
+      "credit_gbps": 0.0,
+      "dest_gbps": 100.0,
+      "arrival_gbps": 1600.0,
+      "buffer_bytes": 32768,
+      "overflow_bytes": 90044.5,
+      "drops": 21,
+      "gpu_overflow_bytes": 90112.0,
+      "gpu_drops": 22,
+      "dest_busy_us": 10.485,
+      "gemv_drain_us": 10.485
+    },
+    "paced": {
+      "n_sources": 16,
+      "total_bytes": 131072,
+      "per_source_bytes": 8192,
+      "paced": true,
+      "credit_gbps": 40.0,
+      "dest_gbps": 100.0,
+      "arrival_gbps": 40.0,
+      "buffer_bytes": 32768,
+      "overflow_bytes": 0.0,
+      "drops": 0,
+      "gpu_overflow_bytes": 0.0,
+      "gpu_drops": 0,
+      "dest_busy_us": 10.485,
+      "gemv_drain_us": 26.214000000000002
+    },
+    "blast_drops": 21,
+    "paced_drops": 0,
+    "blast_gpu_drops": 22,
+    "paced_gpu_drops": 0,
+    "sources": 16,
+    "total_bytes": 131072,
+    "blast_arrival_gbps": 1600.0,
+    "paced_arrival_gbps": 40.0
+  },
+  "sglang": {
+    "leaf_blocks": 4,
+    "second_prefix_hit": true,
+    "probe_hits": 1
+  },
+  "get_latency": {
+    "summary_ns": {
+      "n": 2500.0,
+      "mean": 3503.0588,
+      "p50": 2997.0,
+      "p90": 5291.0,
+      "p99": 6271.0,
+      "max": 7302.0
+    },
+    "slow_path_summary_ns": {
+      "n": 2500.0,
+      "mean": 13247.0,
+      "p50": 13247.0,
+      "p90": 13247.0,
+      "p99": 13247.0,
+      "max": 13247.0
+    },
+    "histogram": [
+      {
+        "lo": 1000.0,
+        "hi": 1593.75,
+        "count": 0
+      },
+      {
+        "lo": 1593.75,
+        "hi": 2187.5,
+        "count": 0
+      },
+      {
+        "lo": 2187.5,
+        "hi": 2781.25,
+        "count": 262
+      },
+      {
+        "lo": 2781.25,
+        "hi": 3375.0,
+        "count": 1434
+      },
+      {
+        "lo": 3375.0,
+        "hi": 3968.75,
+        "count": 310
+      },
+      {
+        "lo": 3968.75,
+        "hi": 4562.5,
+        "count": 59
+      },
+      {
+        "lo": 4562.5,
+        "hi": 5156.25,
+        "count": 57
+      },
+      {
+        "lo": 5156.25,
+        "hi": 5750.0,
+        "count": 305
+      },
+      {
+        "lo": 5750.0,
+        "hi": 6343.75,
+        "count": 56
+      },
+      {
+        "lo": 6343.75,
+        "hi": 6937.5,
+        "count": 12
+      },
+      {
+        "lo": 6937.5,
+        "hi": 7531.25,
+        "count": 5
+      },
+      {
+        "lo": 7531.25,
+        "hi": 8125.0,
+        "count": 0
+      },
+      {
+        "lo": 8125.0,
+        "hi": 8718.75,
+        "count": 0
+      },
+      {
+        "lo": 8718.75,
+        "hi": 9312.5,
+        "count": 0
+      },
+      {
+        "lo": 9312.5,
+        "hi": 9906.25,
+        "count": 0
+      },
+      {
+        "lo": 9906.25,
+        "hi": 10500.0,
+        "count": 0
+      },
+      {
+        "lo": 10500.0,
+        "hi": 11093.75,
+        "count": 0
+      },
+      {
+        "lo": 11093.75,
+        "hi": 11687.5,
+        "count": 0
+      },
+      {
+        "lo": 11687.5,
+        "hi": 12281.25,
+        "count": 0
+      },
+      {
+        "lo": 12281.25,
+        "hi": 12875.0,
+        "count": 0
+      },
+      {
+        "lo": 12875.0,
+        "hi": 13468.75,
+        "count": 0
+      },
+      {
+        "lo": 13468.75,
+        "hi": 14062.5,
+        "count": 0
+      },
+      {
+        "lo": 14062.5,
+        "hi": 14656.25,
+        "count": 0
+      },
+      {
+        "lo": 14656.25,
+        "hi": 15250.0,
+        "count": 0
+      },
+      {
+        "lo": 15250.0,
+        "hi": 15843.75,
+        "count": 0
+      },
+      {
+        "lo": 15843.75,
+        "hi": 16437.5,
+        "count": 0
+      },
+      {
+        "lo": 16437.5,
+        "hi": 17031.25,
+        "count": 0
+      },
+      {
+        "lo": 17031.25,
+        "hi": 17625.0,
+        "count": 0
+      },
+      {
+        "lo": 17625.0,
+        "hi": 18218.75,
+        "count": 0
+      },
+      {
+        "lo": 18218.75,
+        "hi": 18812.5,
+        "count": 0
+      },
+      {
+        "lo": 18812.5,
+        "hi": 19406.25,
+        "count": 0
+      },
+      {
+        "lo": 19406.25,
+        "hi": 20000.0,
+        "count": 0
+      }
+    ],
+    "kinds": {
+      "hit": 1746,
+      "gather": 444,
+      "miss": 190,
+      "hazard": 120
+    },
+    "hazard_rate": 0.021398002853067047,
+    "recirculations": 120,
+    "n_ops": 2500,
+    "p99_vs_slow_split": {
+      "fast_slow_p99": 6271.0,
+      "no_split_p99": 13247.0
+    }
+  },
+  "fingerprint": {
+    "n_buckets": 64,
+    "capacity": 256,
+    "fill": 0.97,
+    "size": 280,
+    "slow_inserts": 64,
+    "fast_inserts": 216,
+    "kicks": 1078,
+    "tag_collisions": 0,
+    "hbm_key_verifies": 248,
+    "victim_buffer": 25,
+    "occupancy_hist": [
+      0,
+      0,
+      0,
+      1,
+      63
+    ],
+    "extra_slow": 30,
+    "sram_slot_fields": [
+      "fingerprint",
+      "phys"
+    ]
+  },
+  "drr": {
+    "n_tenants": 4,
+    "bytes_per_tenant": [
+      262144,
+      262144,
+      262144,
+      262144
+    ],
+    "mean_bytes": 262144.0,
+    "max_min_ratio": 1.0,
+    "jain_fairness": 1.0,
+    "put_bytes": 262144,
+    "get_bytes": 1048576,
+    "preemptions": 256,
+    "puts_while_gets_pending": 0,
+    "gets_finish_before_put": true
+  },
+  "credit_vs_gemv": [
+    {
+      "credit_gbps": 10.0,
+      "gemv_gbps": 40.0,
+      "link_gbps": 100.0,
+      "paced_drops": 0,
+      "blast_drops": 21,
+      "gpu_drops": 0,
+      "paced_arrival_gbps": 10.0,
+      "overflow_bytes": 0.0,
+      "gpu_overflow_bytes": 0.0,
+      "credit_matches_drain": false,
+      "over_credit": false
+    },
+    {
+      "credit_gbps": 20.0,
+      "gemv_gbps": 40.0,
+      "link_gbps": 100.0,
+      "paced_drops": 0,
+      "blast_drops": 21,
+      "gpu_drops": 0,
+      "paced_arrival_gbps": 20.0,
+      "overflow_bytes": 0.0,
+      "gpu_overflow_bytes": 0.0,
+      "credit_matches_drain": false,
+      "over_credit": false
+    },
+    {
+      "credit_gbps": 40.0,
+      "gemv_gbps": 40.0,
+      "link_gbps": 100.0,
+      "paced_drops": 0,
+      "blast_drops": 21,
+      "gpu_drops": 0,
+      "paced_arrival_gbps": 40.0,
+      "overflow_bytes": 0.0,
+      "gpu_overflow_bytes": 0.0,
+      "credit_matches_drain": true,
+      "over_credit": false
+    },
+    {
+      "credit_gbps": 80.0,
+      "gemv_gbps": 40.0,
+      "link_gbps": 100.0,
+      "paced_drops": 0,
+      "blast_drops": 21,
+      "gpu_drops": 8,
+      "paced_arrival_gbps": 80.0,
+      "overflow_bytes": 0.0,
+      "gpu_overflow_bytes": 32768.0,
+      "credit_matches_drain": false,
+      "over_credit": true
+    },
+    {
+      "credit_gbps": 100.0,
+      "gemv_gbps": 40.0,
+      "link_gbps": 100.0,
+      "paced_drops": 0,
+      "blast_drops": 21,
+      "gpu_drops": 11,
+      "paced_arrival_gbps": 100.0,
+      "overflow_bytes": 0.0,
+      "gpu_overflow_bytes": 45875.20000000001,
+      "credit_matches_drain": false,
+      "over_credit": true
+    }
+  ],
+  "baselines": {
+    "ttft_32k": {
+      "tensorkv": {
+        "path": "tensorkv",
+        "setup_ms": 18.000822,
+        "fetch_ms": 214.748364,
+        "compute_ms": 15.0,
+        "total_ms": 247.749186,
+        "prefix_tokens": 32768,
+        "payload_bytes": 2684354560
+      },
+      "host_a100": {
+        "path": "host_a100",
+        "setup_ms": 420.0,
+        "fetch_ms": 83.88608,
+        "compute_ms": 20.0,
+        "total_ms": 523.88608,
+        "prefix_tokens": 32768,
+        "payload_bytes": 2684354560
+      },
+      "host_h100": {
+        "path": "host_h100",
+        "setup_ms": 400.0,
+        "fetch_ms": 41.94304,
+        "compute_ms": 15.0,
+        "total_ms": 456.94304,
+        "prefix_tokens": 32768,
+        "payload_bytes": 2684354560
+      },
+      "rdma_opt": {
+        "path": "rdma_opt",
+        "setup_ms": 140.0,
+        "fetch_ms": 214.748364,
+        "compute_ms": 15.0,
+        "total_ms": 369.74836400000004,
+        "prefix_tokens": 32768,
+        "payload_bytes": 2684354560
+      },
+      "rpc": {
+        "path": "rpc",
+        "setup_ms": 120.0,
+        "fetch_ms": 214.748364,
+        "compute_ms": 15.0,
+        "total_ms": 349.74836400000004,
+        "prefix_tokens": 32768,
+        "payload_bytes": 2684354560
+      },
+      "dpu": {
+        "path": "dpu",
+        "setup_ms": 80.0,
+        "fetch_ms": 214.748364,
+        "compute_ms": 15.0,
+        "total_ms": 309.74836400000004,
+        "prefix_tokens": 32768,
+        "payload_bytes": 2684354560
+      }
+    },
+    "tbt_1gb": {
+      "host_a100": {
+        "path": "host_a100",
+        "dma_ms": 31.25,
+        "meta_ms": 165.0,
+        "sync_ms": 3.0,
+        "compute_ms": 10.0,
+        "residual_ms": 0.0,
+        "total_ms": 209.25,
+        "payload_bytes": 1000000000,
+        "link_gbps": 100.0
+      },
+      "host_h100": {
+        "path": "host_h100",
+        "dma_ms": 15.625,
+        "meta_ms": 145.0,
+        "sync_ms": 3.0,
+        "compute_ms": 10.0,
+        "residual_ms": 6.0,
+        "total_ms": 179.625,
+        "payload_bytes": 1000000000,
+        "link_gbps": 100.0
+      },
+      "rdma_opt": {
+        "path": "rdma_opt",
+        "dma_ms": 87.0,
+        "meta_ms": 26.0,
+        "sync_ms": 14.0,
+        "compute_ms": 10.0,
+        "residual_ms": 3.0,
+        "total_ms": 140.0,
+        "payload_bytes": 1000000000,
+        "link_gbps": 100.0
+      },
+      "rpc": {
+        "path": "rpc",
+        "dma_ms": 87.0,
+        "meta_ms": 3.0,
+        "sync_ms": 32.0,
+        "compute_ms": 10.0,
+        "residual_ms": 0.0,
+        "total_ms": 132.0,
+        "payload_bytes": 1000000000,
+        "link_gbps": 100.0
+      },
+      "dpu": {
+        "path": "dpu",
+        "dma_ms": 87.0,
+        "meta_ms": 21.0,
+        "sync_ms": 2.0,
+        "compute_ms": 10.0,
+        "residual_ms": 0.0,
+        "total_ms": 120.0,
+        "payload_bytes": 1000000000,
+        "link_gbps": 100.0
+      },
+      "tensorkv": {
+        "path": "tensorkv",
+        "dma_ms": 87.0,
+        "meta_ms": 5.0,
+        "sync_ms": 0.0,
+        "compute_ms": 10.0,
+        "residual_ms": 0.0,
+        "total_ms": 102.0,
+        "payload_bytes": 1000000000,
+        "link_gbps": 100.0
+      }
+    },
+    "logical_get": {
+      "tensorkv": {
+        "path": "tensorkv",
+        "n_blocks": 8,
+        "rtts": 1.0,
+        "network_ns": 800,
+        "meta_ns": 150,
+        "dma_ns": 1150,
+        "total_ns": 2100,
+        "mappings_cached": false
+      },
+      "rdma_uncached": {
+        "path": "rdma_uncached",
+        "n_blocks": 8,
+        "rtts": 9.0,
+        "network_ns": 18900,
+        "meta_ns": 11000,
+        "dma_ns": 8000,
+        "total_ns": 37900,
+        "mappings_cached": false
+      }
+    },
+    "known_address_us": {
+      "sram": 2.15,
+      "hbm": 2.42,
+      "dpu": 3.8,
+      "rpc": 4.8,
+      "rdma": 6.5
+    },
+    "dpu_sweep": [
+      {
+        "workers": 1,
+        "mpps": 0.15,
+        "gbps": 4.9152,
+        "saturated": false
+      },
+      {
+        "workers": 2,
+        "mpps": 0.3,
+        "gbps": 9.8304,
+        "saturated": false
+      },
+      {
+        "workers": 4,
+        "mpps": 0.6,
+        "gbps": 19.6608,
+        "saturated": false
+      },
+      {
+        "workers": 8,
+        "mpps": 1.2,
+        "gbps": 39.3216,
+        "saturated": false
+      },
+      {
+        "workers": 16,
+        "mpps": 1.89,
+        "gbps": 61.93152,
+        "saturated": true
+      },
+      {
+        "workers": 32,
+        "mpps": 1.91,
+        "gbps": 62.58688,
+        "saturated": true
+      }
+    ],
+    "bandwidth": [
+      {
+        "link_gbps": 25.0,
+        "tensorkv_ms": 363.0,
+        "rdma_opt_ms": 401.0,
+        "tensorkv_dma_ms": 348.0,
+        "rdma_dma_ms": 348.0
+      },
+      {
+        "link_gbps": 50.0,
+        "tensorkv_ms": 189.0,
+        "rdma_opt_ms": 227.0,
+        "tensorkv_dma_ms": 174.0,
+        "rdma_dma_ms": 174.0
+      },
+      {
+        "link_gbps": 75.0,
+        "tensorkv_ms": 131.0,
+        "rdma_opt_ms": 169.0,
+        "tensorkv_dma_ms": 116.0,
+        "rdma_dma_ms": 116.0
+      },
+      {
+        "link_gbps": 100.0,
+        "tensorkv_ms": 102.0,
+        "rdma_opt_ms": 140.0,
+        "tensorkv_dma_ms": 87.0,
+        "rdma_dma_ms": 87.0
+      }
+    ],
+    "moe": {
+      "64way": {
+        "topology": "64way",
+        "n_prefix": 1,
+        "n_req": 64,
+        "prefix_tokens": 32768,
+        "suffix_tokens": 512,
+        "logical_bytes": 139586437120,
+        "unique_bytes": 4294967296,
+        "remote_need_bytes": 5193913939,
+        "remote_alloc_bytes": 5193913939,
+        "fits_8gib": true,
+        "gpu_graph_oom": true,
+        "host_noapc_tbt_ms": null,
+        "host_soft_tbt_ms": 88.0,
+        "rdma_soft_tbt_ms": 78.0,
+        "tkv_hard_tbt_ms": 52.0,
+        "oom_message": null
+      },
+      "16way": {
+        "topology": "16way",
+        "n_prefix": 2,
+        "n_req": 32,
+        "prefix_tokens": 32768,
+        "suffix_tokens": 512,
+        "logical_bytes": 69793218560,
+        "unique_bytes": 5368709120,
+        "remote_need_bytes": 6462335051,
+        "remote_alloc_bytes": 6462335051,
+        "fits_8gib": true,
+        "gpu_graph_oom": true,
+        "host_noapc_tbt_ms": null,
+        "host_soft_tbt_ms": 85.0,
+        "rdma_soft_tbt_ms": 58.0,
+        "tkv_hard_tbt_ms": 47.0,
+        "oom_message": null
+      },
+      "noshare": {
+        "topology": "noshare",
+        "n_prefix": 32,
+        "n_req": 32,
+        "prefix_tokens": 16384,
+        "suffix_tokens": 512,
+        "logical_bytes": 35433480192,
+        "unique_bytes": 35433480192,
+        "remote_need_bytes": 9733480192,
+        "remote_alloc_bytes": 8589934592,
+        "fits_8gib": false,
+        "gpu_graph_oom": false,
+        "host_noapc_tbt_ms": 105.0,
+        "host_soft_tbt_ms": 105.0,
+        "rdma_soft_tbt_ms": null,
+        "tkv_hard_tbt_ms": null,
+        "oom_message": "libtkv Error: Remote allocation failed. Requested 2.00 MB, 8192 MB allocated"
+      }
+    },
+    "moe_tbt_16way": {
+      "host_soft": {
+        "router": 3.2,
+        "gemm": 18.1,
+        "meta": 42.5,
+        "dma": 21.0,
+        "total": 84.8
+      },
+      "rdma_soft": {
+        "router": 3.2,
+        "gemm": 18.1,
+        "meta": 12.4,
+        "dma": 24.5,
+        "total": 58.2
+      },
+      "tkv_hard": {
+        "router": 3.2,
+        "gemm": 18.1,
+        "meta": 1.2,
+        "dma": 24.1,
+        "total": 46.6
+      }
+    },
+    "ablation": [
+      {
+        "config": "full",
+        "get_p99_us": 2.1,
+        "prefix_phase_ms": 18.0
+      },
+      {
+        "config": "no_prefix_dedup",
+        "get_p99_us": 2.1,
+        "prefix_phase_ms": 1218.0
+      },
+      {
+        "config": "no_fast_slow",
+        "get_p99_us": 12.4,
+        "prefix_phase_ms": 18.0
+      },
+      {
+        "config": "no_zero_copy",
+        "get_p99_us": 8.5,
+        "prefix_phase_ms": 22.0
+      },
+      {
+        "config": "rdma_uncached",
+        "get_p99_us": 14.1,
+        "prefix_phase_ms": 140.0
+      }
+    ],
+    "energy": {
+      "host_a100": {
+        "path": "host_a100",
+        "compute_w": 480.0,
+        "mem_w": 0.0,
+        "switch_w": 0.0,
+        "wall_w": 480.0,
+        "tok_s": 320.0,
+        "j_per_tok": 1.5
+      },
+      "rpc": {
+        "path": "rpc",
+        "compute_w": 575.0,
+        "mem_w": 320.0,
+        "switch_w": 25.0,
+        "wall_w": 920.0,
+        "tok_s": 1400.0,
+        "j_per_tok": 0.6571428571428571
+      },
+      "dpu": {
+        "path": "dpu",
+        "compute_w": 585.0,
+        "mem_w": 235.0,
+        "switch_w": 25.0,
+        "wall_w": 845.0,
+        "tok_s": 1420.0,
+        "j_per_tok": 0.5950704225352113
+      },
+      "tensorkv": {
+        "path": "tensorkv",
+        "compute_w": 590.0,
+        "mem_w": 328.0,
+        "switch_w": 25.0,
+        "wall_w": 943.0,
+        "tok_s": 1600.0,
+        "j_per_tok": 0.589375
+      }
+    },
+    "async_put": {
+      "decode_only_ms": 42.1,
+      "put_isolation_ms": 43.0,
+      "overlapped_ms": 42.1,
+      "tbt_ms": 43.5,
+      "tokens_per_s_decode": 1515.0,
+      "tokens_per_s_both": 1466.2413793103449,
+      "throughput_drop": 0.03218390804597693
+    },
+    "nvshmem": {
+      "chunk_bytes": 2097152,
+      "link": "400Gbps RoCEv2",
+      "effective_gb_s": 42.0,
+      "p99_us": 18.0,
+      "uncached_scattered_p99_us": 45.0,
+      "note": "Distinct 400Gbps / 2MB-chunk platform; not mixed into 4KB GET ablation."
+    }
+  },
+  "eval_tables": {
+    "ttft": {
+      "recompute": {
+        "setup": 0,
+        "fetch": 0,
+        "compute": 1200,
+        "total": 1200
+      },
+      "host_a100": {
+        "setup": 420,
+        "fetch": 80,
+        "compute": 20,
+        "total": 520
+      },
+      "host_h100": {
+        "setup": 400,
+        "fetch": 40,
+        "compute": 15,
+        "total": 455
+      },
+      "rdma": {
+        "setup": 140,
+        "fetch": 250,
+        "compute": 15,
+        "total": 405
+      },
+      "rpc": {
+        "setup": 120,
+        "fetch": 240,
+        "compute": 15,
+        "total": 375
+      },
+      "dpu": {
+        "setup": 80,
+        "fetch": 235,
+        "compute": 15,
+        "total": 330
+      },
+      "tensorkv": {
+        "setup": 18,
+        "fetch": 230,
+        "compute": 15,
+        "total": 263
+      }
+    },
+    "tbt": {
+      "0.25": {
+        "host_a": 52,
+        "host_h": 45,
+        "rdma": 38,
+        "rpc": 36,
+        "dpu": 35,
+        "tkv": 33
+      },
+      "0.5": {
+        "host_a": 110,
+        "host_h": 95,
+        "rdma": 75,
+        "rpc": 70,
+        "dpu": 65,
+        "tkv": 58
+      },
+      "1.0": {
+        "host_a": 210,
+        "host_h": 180,
+        "rdma": 140,
+        "rpc": 132,
+        "dpu": 120,
+        "tkv": 102
+      },
+      "1.5": {
+        "host_a": 290,
+        "host_h": 250,
+        "rdma": 210,
+        "rpc": 195,
+        "dpu": 175,
+        "tkv": 145
+      }
+    },
+    "eviction": {
+      "lru": {
+        "hit_60": 30,
+        "hit_80": 65,
+        "ttft_60": 810,
+        "ttft_80": 245
+      },
+      "lfru": {
+        "hit_60": 78,
+        "hit_80": 92,
+        "ttft_60": 135,
+        "ttft_80": 42
+      }
+    }
+  }
+}

@@ -433,9 +433,7 @@ class TensorKVAppliance:
             events.append(TraceEvent("EVICT", "slow", "free_page", f"HBM[{phys}] -> free list", 20))
         meta = self.eviction.remove(key)
         if meta and meta.prefix_hash is not None:
-            leftover = self.prefix.release(meta.prefix_hash)
-            if leftover <= 0:
-                self.prefix.drop(meta.prefix_hash)
+            self.prefix.forget_block(meta.prefix_hash, meta.block_id)
         chain = self.contexts.get(ctx)
         if chain and bid in chain:
             chain.remove(bid)
@@ -490,6 +488,7 @@ class TensorKVAppliance:
             "crossbar_commits": self.crossbar.commits,
             "lookup_stalls": self.crossbar.lookup_stalls,
             "hbm_key_verifies": self.table.hbm_key_verifies,
+            "cuckoo_kicks": self.table.kicks,
             "puts": self.put_ops,
             "gets": self.get_ops,
             "probes": self.probe_ops,

@@ -20,7 +20,8 @@ export {
   prefixActivation,
   evictionSensitivity,
   isolationExperiment,
-  paperTables,
+  evalTables,
   runAllExperiments,
   promptHash,
+  drrFairness,
 } from "./experiments";

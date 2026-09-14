@@ -2,7 +2,7 @@
 
 Paper § Cross-Engine Integration: replace local radix-leaf allocation with
 PROBE + PUT. Firmware and the wire protocol stay unchanged; this module is
-the software replica of that 350-line integration.
+that 350-line integration.
 """
 
 from __future__ import annotations

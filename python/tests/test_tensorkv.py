@@ -1,4 +1,4 @@
-"""Unit tests for the TensorKV algorithm replica."""
+"""Unit tests for the TensorKV software implementation."""
 
 from __future__ import annotations
 
@@ -29,17 +29,23 @@ from tensorkv.descriptor import DESCRIPTOR_BYTES, get_descriptor, put_descriptor
 from tensorkv.engine import PagedEngine
 from tensorkv.experiments import (
     attention_incast,
+    eviction_sensitivity,
+    get_latency_histogram,
+    isolation_experiment,
     monotonic_race,
     occupancy_sweep,
     prefix_activation,
     scatter_gather_rtts,
     sglang_radix,
+    sharegpt_eviction,
 )
-from tensorkv.hashutil import fingerprint, pack_key
+from tensorkv.fairness import credit_vs_gemv_sweep, drr_fairness
+from tensorkv.hashutil import SplitMix64, fingerprint, pack_key
 from tensorkv.hbm import BankedHBM
 from tensorkv.incast import simulate_attention_incast
 from tensorkv.libtkv import TensorKVContext
 from tensorkv.transport import VirtualOutputQueues, Packet, simulate_noisy_neighbor
+from tensorkv.workload import ZipfSampler
 
 
 class TestPrimitives(unittest.TestCase):
@@ -213,6 +219,17 @@ class TestTransport(unittest.TestCase):
         self.assertGreater(fifo.drops, both.drops)
         self.assertLess(pacing.interference_p99, fifo.interference_p99)
         self.assertLessEqual(both.interference_p99, pacing.interference_p99)
+        self.assertGreaterEqual(fifo.interference_p99, 100.0)
+        self.assertLess(both.interference_p99, 8.0)
+        self.assertGreaterEqual(qos.interference_p99, 20.0)
+        self.assertLess(qos.interference_p99, 80.0)
+        self.assertGreaterEqual(pacing.interference_p99, 10.0)
+        self.assertLess(pacing.interference_p99, 25.0)
+        self.assertGreater(fifo.interference_p99, qos.interference_p99)
+        self.assertGreater(qos.interference_p99, pacing.interference_p99)
+        self.assertGreater(pacing.interference_p99, both.interference_p99)
+        self.assertEqual(both.get_drops, 0)
+        self.assertGreater(fifo.get_drops, 0)
 
     def test_voq_used_by_appliance(self) -> None:
         tkv = TensorKVAppliance(ApplianceConfig(n_pages=16, n_buckets=8, block_size=32))
@@ -255,11 +272,14 @@ class TestLibTkvAndEngine(unittest.TestCase):
         self.assertTrue(r["gathered_ok"])
 
     def test_occupancy_runs(self) -> None:
-        pts = occupancy_sweep(loads=(0.5, 0.8))
-        self.assertEqual(len(pts), 2)
+        pts = occupancy_sweep(loads=(0.5, 0.8, 0.95), n_ops=2500, n_buckets=256)
+        self.assertEqual(len(pts), 3)
         self.assertGreaterEqual(pts[1].load, pts[0].load)
         self.assertGreater(pts[0].throughput_keep, 0.5)
         self.assertEqual(pts[0].service_ns, pts[0].ideal_ns + pts[0].extra_ns)
+        self.assertGreaterEqual(pts[-1].fill_slow_insert_rate, pts[0].fill_slow_insert_rate)
+        self.assertGreater(pts[-1].kicks, pts[0].kicks)
+        self.assertGreater(pts[0].zipf_head_share, 0.15)
 
 
 class TestDescriptorAndHBM(unittest.TestCase):
@@ -422,6 +442,73 @@ class TestBaselinesAndPaperTables(unittest.TestCase):
         req = eng.submit(1, list(range(32)))
         self.assertEqual(eng.stats.bytes_get, 32 * 81_920)
         self.assertGreater(req.ttft_fetch_ms, 0.0)
+
+
+class TestZipfAndWorkloads(unittest.TestCase):
+    def test_zipf_head_is_hot(self) -> None:
+        z = ZipfSampler(1000, 1.2, SplitMix64(1))
+        head = z.empirical_head_share(8000, head=50)
+        self.assertGreater(head, 0.20)
+        ranks = [z.sample() for _ in range(4000)]
+        self.assertGreater(ranks.count(1), ranks.count(500))
+
+    def test_lfru_flood_separates_from_lru(self) -> None:
+        ev = eviction_sensitivity()
+        lru60 = ev["lru_60"]
+        lfru60 = ev["lfru_60"]
+        lru80 = ev["lru_80"]
+        lfru80 = ev["lfru_80"]
+        self.assertAlmostEqual(lru60["prefix_survival_pct"], 30.0, delta=8.0)
+        self.assertAlmostEqual(lru80["prefix_survival_pct"], 65.0, delta=8.0)
+        self.assertGreaterEqual(lfru60["prefix_survival_pct"], 95.0)
+        self.assertGreaterEqual(lfru80["prefix_survival_pct"], 95.0)
+        self.assertGreater(lfru60["prefix_survival_pct"] - lru60["prefix_survival_pct"], 40.0)
+        self.assertGreater(lfru80["hit_rate"], lru80["hit_rate"])
+        self.assertLess(lfru60["weighted_ttft_ms"], lru60["weighted_ttft_ms"] - 200)
+
+    def test_sharegpt_lfru_keeps_more_prefix(self) -> None:
+        r = sharegpt_eviction(0.6)
+        self.assertGreater(r["lfru_minus_lru_survival"], 15.0)
+        self.assertGreater(r["lfru"]["prefix_survival_pct"], r["lru"]["prefix_survival_pct"])
+        hot = sharegpt_eviction(0.8)
+        self.assertGreaterEqual(hot["lfru"]["prefix_survival_pct"], hot["lru"]["prefix_survival_pct"])
+
+    def test_prefix_ttft_gap_on_32k_is_obvious(self) -> None:
+        small = prefix_activation(256)
+        self.assertLess(small["second_ttft_ms"], small["first_ttft_ms"])
+        self.assertGreater(small["first_ttft_parts"]["compute"], small["second_ttft_parts"]["compute"])
+        large = prefix_activation(4096)
+        self.assertGreater(large["ttft_gap_ms"], 50.0)
+        self.assertGreater(large["first_ttft_parts"]["compute"], 100.0)
+        self.assertLess(large["second_ttft_parts"]["compute"], 10.0)
+
+    def test_drr_is_fair_and_preempts_put(self) -> None:
+        r = drr_fairness()
+        self.assertGreater(r["jain_fairness"], 0.98)
+        self.assertLess(r["max_min_ratio"], 1.05)
+        self.assertTrue(r["gets_finish_before_put"])
+        self.assertGreater(r["preemptions"], 0)
+
+    def test_credit_above_gemv_not_needed(self) -> None:
+        rows = {row["credit_gbps"]: row for row in credit_vs_gemv_sweep()}
+        self.assertEqual(rows[40.0]["paced_drops"], 0)
+        self.assertGreater(rows[40.0]["blast_drops"], 0)
+        self.assertEqual(rows[40.0]["gpu_drops"], 0)
+        self.assertGreater(rows[80.0]["gpu_drops"], 0)
+        self.assertGreater(rows[100.0]["gpu_drops"], rows[40.0]["gpu_drops"])
+
+    def test_get_latency_histogram_has_mass(self) -> None:
+        h = get_latency_histogram(n_keys=128, n_ops=400)
+        self.assertGreater(h["summary_ns"]["n"], 100)
+        self.assertGreater(h["summary_ns"]["p50"], 0)
+        self.assertGreater(h["summary_ns"]["p99"], h["summary_ns"]["p50"])
+        self.assertGreater(h["slow_path_summary_ns"]["p50"], h["summary_ns"]["p50"])
+
+    def test_isolation_experiment_four_regimes(self) -> None:
+        iso = isolation_experiment(duration_s=3.0, tick_us=50.0, interference_start_s=1.0, interference_end_s=2.0)
+        self.assertGreater(iso["fifo"].interference_p99, iso["qos"].interference_p99)
+        self.assertGreater(iso["qos"].interference_p99, iso["pacing"].interference_p99)
+        self.assertGreater(iso["pacing"].interference_p99, iso["both"].interference_p99)
 
 
 def run_unittest() -> int:

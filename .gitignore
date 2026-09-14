@@ -47,5 +47,5 @@ __pycache__/
 .venv/
 python/**/__pycache__/
 
-# paper upload (not part of the replica)
+# local uploads
 /uploads/

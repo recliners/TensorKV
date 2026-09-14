@@ -1,4 +1,4 @@
-/** Paper-derived constants. */
+/** TensorKV datapath and eval-table constants. */
 export const TOKENS_PER_BLOCK = 16;
 export const BLOCK_SIZE_BYTES = 4096;
 export const ALLOC_FIFO_BATCH = 64;
@@ -22,12 +22,14 @@ export const DEFAULT_CREDIT_GBPS = 40;
 export const HIGH_PRIORITY_OPCODES = new Set(["GET", "PROBE"]);
 export const BYTES_PER_TOKEN_LLAMA70B_INT4 = 81920;
 export const BYTES_PER_TOKEN_MIXTRAL_FP8 = 65536;
-export const PAPER_PREFILL_TOKENS = 32768;
-export const PAPER_COMPUTE_MS_AT_32K = 15;
+export const PREFILL_TOKENS = 32768;
+export const COMPUTE_MS_AT_32K = 15;
+export const PREFILL_COMPUTE_MS_AT_32K = 1200;
+export const HANDLE_INSTALL_NS = 8789;
 export const HBM_CAPACITY_BYTES = 8 * 1024 * 1024 * 1024;
 export const DESCRIPTOR_BYTES = 64;
 
-export const PAPER_TTFT = {
+export const EVAL_TTFT = {
   recompute: { setup: 0, fetch: 0, compute: 1200, total: 1200 },
   host_a100: { setup: 420, fetch: 80, compute: 20, total: 520 },
   host_h100: { setup: 400, fetch: 40, compute: 15, total: 455 },
@@ -37,14 +39,14 @@ export const PAPER_TTFT = {
   tensorkv: { setup: 18, fetch: 230, compute: 15, total: 263 },
 } as const;
 
-export const PAPER_TBT: Record<string, Record<string, number>> = {
+export const EVAL_TBT: Record<string, Record<string, number>> = {
   "0.25": { host_a: 52, host_h: 45, rdma: 38, rpc: 36, dpu: 35, tkv: 33 },
   "0.5": { host_a: 110, host_h: 95, rdma: 75, rpc: 70, dpu: 65, tkv: 58 },
   "1.0": { host_a: 210, host_h: 180, rdma: 140, rpc: 132, dpu: 120, tkv: 102 },
   "1.5": { host_a: 290, host_h: 250, rdma: 210, rpc: 195, dpu: 175, tkv: 145 },
 };
 
-export const PAPER_EVICTION = {
+export const EVAL_EVICTION = {
   lru: { hit_60: 30, hit_80: 65, ttft_60: 810, ttft_80: 245 },
   lfru: { hit_60: 78, hit_80: 92, ttft_60: 135, ttft_80: 42 },
 } as const;
@@ -94,6 +96,40 @@ export class SplitMix64 {
   randint(lo: number, hi: number): number {
     const span = hi - lo + 1;
     return lo + Number(this.nextU64() % BigInt(span));
+  }
+}
+
+export class ZipfSampler {
+  n: number;
+  alpha: number;
+  rng: SplitMix64;
+  cdf: number[];
+  constructor(n: number, alpha = ZIPF_ALPHA, rng?: SplitMix64) {
+    this.n = n;
+    this.alpha = alpha;
+    this.rng = rng ?? new SplitMix64(0x5eedn);
+    const weights = Array.from({ length: n }, (_, i) => (i + 1) ** -alpha);
+    const total = weights.reduce((a, b) => a + b, 0);
+    let acc = 0;
+    this.cdf = weights.map((w) => {
+      acc += w / total;
+      return acc;
+    });
+    this.cdf[this.cdf.length - 1] = 1;
+  }
+  sample(): number {
+    const u = this.rng.nextFloat();
+    let lo = 0;
+    let hi = this.n - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (this.cdf[mid] < u) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo + 1;
+  }
+  sampleIndex(): number {
+    return this.sample() - 1;
   }
 }
 

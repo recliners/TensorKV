@@ -60,6 +60,7 @@ export class CuckooTable {
   lookups = 0;
   hits = 0;
   hbmKeyVerifies = 0;
+  kicks = 0;
 
   constructor(nBuckets: number, seed = 0xa5a5n) {
     this.nBuckets = nBuckets;
@@ -156,6 +157,7 @@ export class CuckooTable {
     let curTag = tag;
     let curBucket = h1;
     for (let k = 0; k < this.maxKicks; k++) {
+      this.kicks++;
       const slotI = this.rng.randint(0, this.slotsPer - 1);
       const victim = this.buckets[curBucket][slotI];
       const victimKey = this.slotKey(victim);
@@ -226,6 +228,15 @@ export class CuckooTable {
       return vic.phys;
     }
     return null;
+  }
+
+  occupancyHistogram(): number[] {
+    const hist = Array.from({ length: this.slotsPer + 1 }, () => 0);
+    for (const bucket of this.buckets) {
+      const used = bucket.filter((s) => s.fingerprint !== 0).length;
+      hist[used]++;
+    }
+    return hist;
   }
 }
 
@@ -353,6 +364,13 @@ export class PrefixIndex {
 
   drop(promptHash: bigint) {
     this.table.delete(promptHash.toString());
+  }
+
+  forgetBlock(promptHash: bigint, blockId: number) {
+    const rec = this.table.get(promptHash.toString());
+    if (!rec) return;
+    rec.blockIds = rec.blockIds.filter((b) => b !== blockId);
+    if (!rec.blockIds.length) this.drop(promptHash);
   }
 }
 

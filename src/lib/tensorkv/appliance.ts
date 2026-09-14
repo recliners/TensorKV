@@ -373,8 +373,7 @@ export class TensorKVAppliance {
     }
     const meta = this.eviction.remove(key);
     if (meta?.prefixHash !== null && meta?.prefixHash !== undefined) {
-      const leftover = this.prefix.release(meta.prefixHash);
-      if (leftover <= 0) this.prefix.drop(meta.prefixHash);
+      this.prefix.forgetBlock(meta.prefixHash, meta.blockId);
     }
     const chain = this.contexts.get(ctx);
     if (chain) {
