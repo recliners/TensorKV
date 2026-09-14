@@ -413,7 +413,9 @@
   "sglang": {
     "leaf_blocks": 4,
     "second_prefix_hit": true,
-    "probe_hits": 1
+    "probe_hits": 1,
+    "skipped_tokens": 64,
+    "leaves": 1
   },
   "get_latency": {
     "summary_ns": {

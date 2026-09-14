@@ -3,7 +3,9 @@
 import { useMemo, useState } from "react";
 import { SiteShell } from "@/components/site-shell";
 import { TensorKVAppliance, TensorKVContext } from "@/lib/tensorkv/appliance";
-import { promptHash } from "@/lib/tensorkv/experiments";
+import { PagedEngine } from "@/lib/tensorkv/engine";
+import { SGLangEngine } from "@/lib/tensorkv/sglang";
+import { promptHash } from "@/lib/tensorkv/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -15,45 +17,62 @@ export default function EnginePage() {
   const [stats, setStats] = useState<Record<string, number | string>>({});
 
   const run = () => {
-    const device = new TensorKVAppliance({ nBuckets: 64, nPages: 256, blockSize: 64 });
-    const tkv = new TensorKVContext(device);
+    const device = new TensorKVAppliance({ nBuckets: 128, nPages: 512, storePayloads: false });
+    const engine = new PagedEngine(new TensorKVContext(device));
     const log: Step[] = [];
-    const prefix = [11, 22, 33, 44, 55, 66, 77, 88, 99, 100, 101, 102, 103, 104, 105, 106];
-    const ph = promptHash(prefix);
+    const prefix = Array.from({ length: 32 }, (_, i) => 11 + i);
 
-    log.push({ title: "请求 A · Prefill", detail: "PROBE 共享 system prompt → Miss，本地计算后 PUT 前缀块。" });
-    for (let i = 0; i < 2; i++) tkv.putAsync(1, i, new Uint8Array(8).fill(i), ph);
-    tkv.device.publishPrefix(ph, 1, [0, 1]);
-    const p0 = tkv.probe(ph);
-    log.push({ title: "登记前缀", detail: `PromptHash 已写入 Bloom + 前缀表。自检 PROBE hit=${p0.hit} ref=${p0.refcount}` });
-
-    log.push({ title: "请求 B · Scheduler", detail: "第二次 PROBE 命中，只返回句柄，不读 HBM。" });
-    const p1 = tkv.probe(ph);
+    const a = engine.submit(1, [...prefix, 201, 202], prefix);
     log.push({
-      title: "PROBE HIT",
-      detail: `handles=[${p1.handles}] ref=${p1.refcount} hbmAccessed=${p1.hbmAccessed}（命中只跳过重算，TTFT 仍含后续 GET+Attention）`,
+      title: "请求 A · Prefill",
+      detail: `PROBE Miss，把 ${prefix.length} token 前缀物化并登记。TTFT setup ${a.ttftSetupMs.toFixed(3)} ms · fetch ${a.ttftFetchMs.toFixed(2)} ms · compute ${a.ttftComputeMs.toFixed(2)} ms（合计 ${a.ttftMs.toFixed(2)} ms）。命中=${a.prefixHit}`,
     });
 
-    tkv.putAsync(2, 0, new Uint8Array([7, 7, 7]));
-    const g = tkv.getAsync(1, p1.handles, 40);
+    const b = engine.submit(2, [...prefix, 301, 302, 303], prefix);
     log.push({
-      title: "Worker · TKV_GET",
-      detail: `从拥有者上下文 gather 前缀 ${g.hits.length} 块，连续 ${g.gatheredBytes}B，供 GEMV 使用。`,
+      title: "请求 B · Scheduler PROBE HIT",
+      detail: `跳过 ${engine.stats.skippedPrefillTokens} 个前缀 token。owner ctx=${b.prefixOwner} handles=${b.prefixBlocks.length}。TTFT setup ${b.ttftSetupMs.toFixed(3)} ms · fetch ${b.ttftFetchMs.toFixed(2)} ms · compute ${b.ttftComputeMs.toFixed(2)} ms（合计 ${b.ttftMs.toFixed(2)} ms）。`,
     });
 
-    const raceCtx = 3;
-    tkv.putAsync(raceCtx, 0, new TextEncoder().encode("KV0"));
-    tkv.device.beginEvictKey(raceCtx, 0);
-    const mid = tkv.device.get(raceCtx, [0]);
-    tkv.device.completeEvictKey(raceCtx, 0);
-    const after = tkv.device.get(raceCtx, [0]);
+    const tbt1 = engine.decode(2, 401);
+    const tbt2 = engine.decode(2, 402);
     log.push({
-      title: "请求结束 · EVICT",
-      detail: `Scoreboard 回收期间 GET recirc=${mid.recirculations} miss=[${mid.misses}] payload=${mid.payload.length}B；完成后 miss=[${after.misses}]，危险期不读 HBM。`,
+      title: "请求 B · Decode",
+      detail: `两步 TBT ${tbt1.toFixed(3)} ms / ${tbt2.toFixed(3)} ms（gather 走 40 Gbps GEMV credit）。generated=${engine.requests.get(2)?.generated}`,
+    });
+
+    const sgl = new SGLangEngine();
+    const leaf = sgl.insertPrefix(prefix);
+    const act = sgl.activate([...prefix, 9, 8, 7]);
+    log.push({
+      title: "SGLang radix 叶",
+      detail: `insert_prefix 叶 ${leaf.blockIds.length} 块；activate 更长 prompt 时 longest-leaf PROBE hit=${act.prefixHit}，skipped=${sgl.paged.stats.skippedPrefillTokens}`,
+    });
+
+    const refBeforeFinish = [...device.prefix.table.values()][0]?.refcount ?? 0;
+    engine.finish(2, true);
+    const still = device.probe(promptHash(prefix));
+    log.push({
+      title: "请求 B · finish(keep_prefix)",
+      detail: `后缀已回收。finish 前前缀 ref=${refBeforeFinish}，release 后再 PROBE hit=${still.hit} handles=${still.handles.length} ref=${still.refcount}。逻辑 GET 字节 ${engine.stats.bytesGet}`,
+    });
+
+    sgl.finish(act.reqId, true);
+    log.push({
+      title: "SGLang · finish",
+      detail: `radix 叶请求 ${act.reqId} 已结束。叶仍登记 ${sgl.leaves.size} 条，器件 PROBE hits=${sgl.tkv.device.prefix.hits}`,
     });
 
     setSteps(log);
-    setStats(device.stats());
+    setStats({
+      ...device.stats(),
+      enginePrefills: engine.stats.prefills,
+      enginePrefixHits: engine.stats.prefixHits,
+      enginePrefixMisses: engine.stats.prefixMisses,
+      engineDecodeSteps: engine.stats.decodeSteps,
+      skippedPrefillTokens: engine.stats.skippedPrefillTokens,
+      sglangLeaves: sgl.leaves.size,
+    });
   };
 
   const statEntries = useMemo(() => Object.entries(stats), [stats]);
@@ -62,18 +81,18 @@ export default function EnginePage() {
     <SiteShell>
       <h1 className="text-2xl font-semibold tracking-tight">推理引擎工作流</h1>
       <p className="mt-2 mb-6 max-w-3xl text-sm text-muted-foreground">
-        调度器做 PROBE，缓存引擎做 PUT/EVICT，Attention 路径做 JIT GET。这里用缩小的 token 块演示同一套控制流。
+        这一页跑的是与 Python <code>PagedEngine</code> / <code>SGLangEngine</code> 同一套控制流：调度器 PROBE，缓存引擎 PUT/EVICT，Attention 路径 JIT GET，radix 叶走最长前缀匹配。
       </p>
-      <Button onClick={run}>跑一遍共享前缀场景</Button>
+      <Button onClick={run}>跑一遍共享前缀 + radix 叶</Button>
       <div className="mt-6 grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
         <Card className="bg-card/80">
           <CardHeader>
             <CardTitle className="text-base">控制平面步骤</CardTitle>
-            <CardDescription>Scheduler → libtkv → 器件</CardDescription>
+            <CardDescription>PagedEngine.submit / decode / finish · SGLang.activate</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
             {steps.length === 0 ? (
-              <p className="text-sm text-muted-foreground">点击上方按钮，模拟两个请求共享同一段 prefix。</p>
+              <p className="text-sm text-muted-foreground">点击上方按钮，模拟两个请求共享同一段 prefix，再挂一个 radix 叶。</p>
             ) : (
               steps.map((s, i) => (
                 <div key={i} className="rounded-lg border border-border/60 p-3">
@@ -89,13 +108,13 @@ export default function EnginePage() {
         </Card>
         <Card className="bg-card/80">
           <CardHeader>
-            <CardTitle className="text-base">器件计数器</CardTitle>
+            <CardTitle className="text-base">引擎与器件计数器</CardTitle>
           </CardHeader>
           <CardContent className="grid grid-cols-2 gap-2 text-sm">
             {statEntries.length === 0 ? (
               <p className="col-span-2 text-muted-foreground">尚无数据</p>
             ) : (
-              statEntries.slice(0, 12).map(([k, v]) => (
+              statEntries.slice(0, 16).map(([k, v]) => (
                 <div key={k} className="rounded-md bg-muted/50 p-2">
                   <div className="text-[11px] text-muted-foreground">{k}</div>
                   <div className="font-mono">{String(v)}</div>

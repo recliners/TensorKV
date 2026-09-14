@@ -6,12 +6,13 @@ import {
   Scoreboard,
 } from "./core";
 import { AtomicCrossbar } from "./crossbar";
-import { encodeDescriptor, getDescriptor, probeDescriptor, putDescriptor } from "./descriptor";
+import { encodeDescriptor, evictDescriptor, getDescriptor, probeDescriptor, putDescriptor } from "./descriptor";
 import { BankedHBM } from "./hbm";
 import { CreditShaper, VirtualOutputQueues } from "./transport";
+import { TKV_NETWORK_NS, TKV_PCIE_DMA_NS } from "./timing";
+import { World } from "./world";
 import {
   BLOCK_SIZE_BYTES,
-  DESCRIPTOR_BYTES,
   FAST_PATH_HBM_HIT_NS,
   FAST_PATH_SRAM_HIT_NS,
   HAZARD_RECIRC_NS,
@@ -77,9 +78,11 @@ export class TensorKVAppliance {
   voq = new VirtualOutputQueues();
   crossbar = new AtomicCrossbar();
   store: BankedHBM;
+  world = new World();
   contexts = new Map<number, number[]>();
   inflightEvict = new Set<string>();
   shadowCommits = 0;
+  bankLocks = 0;
   putOps = 0;
   getOps = 0;
   probeOps = 0;
@@ -158,6 +161,7 @@ export class TensorKVAppliance {
       const commitNs = this.crossbar.commit();
       this.crossbar.release();
       this.shadowCommits++;
+      this.bankLocks++;
       events.push({ op: "PUT", path: "slow", stage: "crossbar", detail: "atomic shadow-row commit", latency_ns: commitNs });
     }
     const chain = this.contexts.get(contextId) ?? [];
@@ -270,6 +274,23 @@ export class TensorKVAppliance {
     };
   }
 
+  finishGet(contextId: number, blockIds: number[], creditGbps?: number, maxRecirc = 64): GetResult {
+    let totalRecirc = 0;
+    let last: GetResult | null = null;
+    for (let i = 0; i < maxRecirc; i++) {
+      last = this.get(contextId, blockIds, creditGbps);
+      totalRecirc += last.recirculations;
+      if (last.recirculations === 0) {
+        last.recirculations = totalRecirc;
+        return last;
+      }
+      this.world.runUntil(this.world.nowNs + HAZARD_RECIRC_NS);
+      this.crossbar.advance(HAZARD_RECIRC_NS);
+    }
+    last!.recirculations = totalRecirc;
+    return last!;
+  }
+
   probe(promptHash: bigint): ProbeResult {
     const events: TraceEvent[] = [];
     this.probeOps++;
@@ -379,6 +400,7 @@ export class TensorKVAppliance {
     this.crossbar.release();
     events.push({ op: "EVICT", path: "slow", stage: "crossbar", detail: "clear map + atomic commit", latency_ns: commitNs + stall });
     this.shadowCommits++;
+    this.bankLocks++;
     if (phys !== null) {
       this.store.clear(phys);
       this.allocator.free(phys);
@@ -396,6 +418,20 @@ export class TensorKVAppliance {
     }
     this.scoreboard.clearHazard(key);
     this.schedule("EVICT", ctx, 64);
+  }
+
+  scheduleEvict(contextId: number, blockId: number, delayNs = 400) {
+    this.beginEvictKey(contextId, blockId);
+    this.world.after(delayNs, () => this.completeEvictKey(contextId, blockId));
+  }
+
+  releasePrefix(promptHash: bigint) {
+    const rec = this.prefix.table.get(promptHash.toString());
+    const ref = this.prefix.release(promptHash);
+    if (rec) {
+      for (const bid of rec.blockIds) this.eviction.setRefcount(packKey(rec.contextId, bid), ref);
+    }
+    return ref;
   }
 
   private schedule(opcode: string, contextId: number, size: number): number {
@@ -438,12 +474,15 @@ export class TensorKVAppliance {
       crossbarCommits: this.crossbar.commits,
       lookupStalls: this.crossbar.lookupStalls,
       hbmKeyVerifies: this.table.hbmKeyVerifies,
+      cuckooKicks: this.table.kicks,
+      bankLocks: this.bankLocks,
       puts: this.putOps,
       gets: this.getOps,
       probes: this.probeOps,
       evicts: this.evictOps,
       probeHits: this.prefix.hits,
       probeMisses: this.prefix.misses,
+      bloomFalsePositives: this.prefix.bloomFalsePositives,
       gatheredBytes: this.gatheredBytes,
       contexts: this.contexts.size,
       voqHigh: this.voq.dequeuedHigh,
@@ -468,38 +507,93 @@ export class TensorKVAppliance {
 
 export class TensorKVContext {
   device: TensorKVAppliance;
-  cq: { op: string; ok: boolean; detail: string; descriptor: Uint8Array }[] = [];
+  world: World;
+  cq: { op: string; ok: boolean; detail: string; descriptor: Uint8Array; ticket: number }[] = [];
   descriptorsPosted = 0;
+  submitted = 0;
+  sqDepth = 0;
+  registered: [bigint, number][] = [];
+  private ticket = 0;
+  autoFlush = true;
+
   constructor(device?: TensorKVAppliance) {
     this.device = device ?? new TensorKVAppliance();
+    this.world = this.device.world;
   }
-  putAsync(ctx: number, seq: number, data?: Uint8Array, prefixHash?: bigint) {
-    const desc = encodeDescriptor(putDescriptor(ctx, seq));
-    this.descriptorsPosted++;
-    const r = this.device.put(ctx, seq, data, prefixHash);
-    this.cq.push({ op: "PUT", ok: r.ok, detail: `block ${seq} page=${r.phys}`, descriptor: desc });
-    return r;
+
+  registerGpuMemory(gpuPtr: bigint, size: number) {
+    this.registered.push([gpuPtr, size]);
   }
-  getAsync(ctx: number, ids: number[], credit = 40) {
-    const desc = encodeDescriptor(getDescriptor(ctx, ids, credit));
-    this.descriptorsPosted++;
-    const r = this.device.get(ctx, ids, credit);
-    this.cq.push({ op: "GET", ok: r.ok, detail: `hits=${r.hits.length} misses=${r.misses.length}`, descriptor: desc });
-    return r;
+
+  private post(op: string, desc: Uint8Array, run: () => { ok?: boolean; hit?: boolean; [k: string]: unknown }) {
+    this.ticket += 1;
+    this.submitted += 1;
+    this.sqDepth += 1;
+    this.descriptorsPosted += 1;
+    this.world.advance(TKV_NETWORK_NS);
+    const result = run();
+    this.world.advance(TKV_PCIE_DMA_NS);
+    const ok = op === "PROBE" ? Boolean(result.hit) : Boolean(result.ok ?? true);
+    this.sqDepth = Math.max(0, this.sqDepth - 1);
+    this.cq.push({ op, ok, detail: String(result.detail ?? ""), descriptor: desc, ticket: this.ticket });
+    return result;
   }
+
+  putAsync(ctx: number, seq: number, data?: Uint8Array, prefixHash?: bigint, gpuPtr = 0n) {
+    const desc = encodeDescriptor(putDescriptor(ctx, seq, gpuPtr));
+    let result: ReturnType<TensorKVAppliance["put"]> | null = null;
+    this.post("PUT", desc, () => {
+      result = this.device.put(ctx, seq, data, prefixHash);
+      return { ok: result.ok, detail: `block ${seq} page=${result.phys}` };
+    });
+    return result!;
+  }
+
+  getAsync(ctx: number, ids: number[], credit = 40, gpuPtr = 0n) {
+    const desc = encodeDescriptor(getDescriptor(ctx, ids, credit, gpuPtr));
+    let result: ReturnType<TensorKVAppliance["get"]> | null = null;
+    this.post("GET", desc, () => {
+      result = this.device.get(ctx, ids, credit);
+      return { ok: result.ok, detail: `hits=${result.hits.length} misses=${result.misses.length}` };
+    });
+    return result!;
+  }
+
   probe(hash: bigint) {
     const desc = encodeDescriptor(probeDescriptor(hash));
-    this.descriptorsPosted++;
-    const r = this.device.probe(hash);
-    this.cq.push({ op: "PROBE", ok: r.hit, detail: r.hit ? `handles=${r.handles.length}` : "miss", descriptor: desc });
-    return r;
+    let result: ReturnType<TensorKVAppliance["probe"]> | null = null;
+    this.post("PROBE", desc, () => {
+      result = this.device.probe(hash);
+      return { ok: result.hit, hit: result.hit, detail: result.hit ? `handles=${result.handles.length}` : "miss" };
+    });
+    return result!;
   }
+
   evict(ctx: number, policy: "lru" | "lfru" | "all" | "oldest" = "lru", k?: number) {
-    const r = this.device.evict(ctx, policy, k);
-    this.cq.push({ op: "EVICT", ok: true, detail: `n=${r.evicted.length}`, descriptor: new Uint8Array(DESCRIPTOR_BYTES) });
-    return r;
+    const desc = encodeDescriptor(evictDescriptor(ctx));
+    let result: ReturnType<TensorKVAppliance["evict"]> | null = null;
+    this.post("EVICT", desc, () => {
+      result = this.device.evict(ctx, policy, k);
+      return { ok: true, detail: `n=${result.evicted.length}` };
+    });
+    return result!;
   }
+
   poll() {
     return this.cq.shift() ?? null;
   }
+
+  pollCompletion() {
+    return this.poll();
+  }
+
+  drain() {
+    const out = this.cq.slice();
+    this.cq = [];
+    return out;
+  }
+}
+
+export function openDevice() {
+  return new TensorKVContext();
 }

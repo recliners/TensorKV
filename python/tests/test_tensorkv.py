@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT))
 from tensorkv.appliance import ApplianceConfig, TensorKVAppliance
 from tensorkv.baselines import (
     ablation_get_p99_us,
+    async_put_interference,
     bandwidth_sweep,
     dpu_gbps,
     dpu_mpps,
@@ -25,11 +26,12 @@ from tensorkv.baselines import (
 from tensorkv.bloom import BloomFilter
 from tensorkv.crossbar import AtomicCrossbar
 from tensorkv.cuckoo import CuckooTable, Slot
-from tensorkv.descriptor import DESCRIPTOR_BYTES, get_descriptor, put_descriptor
+from tensorkv.descriptor import DESCRIPTOR_BYTES, Descriptor, get_descriptor, put_descriptor
 from tensorkv.engine import PagedEngine
 from tensorkv.experiments import (
     attention_incast,
     eviction_sensitivity,
+    fingerprint_and_victim,
     get_latency_histogram,
     isolation_experiment,
     monotonic_race,
@@ -39,13 +41,15 @@ from tensorkv.experiments import (
     sglang_radix,
     sharegpt_eviction,
 )
+from tensorkv.sglang import SGLangEngine
 from tensorkv.fairness import credit_vs_gemv_sweep, drr_fairness
-from tensorkv.hashutil import SplitMix64, fingerprint, pack_key
+from tensorkv.hashutil import SplitMix64, fingerprint, pack_key, prompt_hash
 from tensorkv.hbm import BankedHBM
 from tensorkv.incast import simulate_attention_incast
 from tensorkv.libtkv import TensorKVContext
 from tensorkv.transport import VirtualOutputQueues, Packet, simulate_noisy_neighbor
 from tensorkv.workload import ZipfSampler
+from tensorkv.world import World
 
 
 class TestPrimitives(unittest.TestCase):
@@ -291,6 +295,11 @@ class TestDescriptorAndHBM(unittest.TestCase):
         decoded = get_descriptor(1, list(range(12)), credit_gbps=40.0)
         self.assertEqual(decoded.n_blocks, 12)
         self.assertEqual(len(decoded.block_ids), 8)
+        roundtrip = Descriptor.decode(got)
+        self.assertEqual(roundtrip.opcode, "GET")
+        self.assertEqual(roundtrip.n_blocks, 12)
+        self.assertEqual(roundtrip.block_ids, list(range(8)))
+        self.assertAlmostEqual(roundtrip.credit_gbps, 40.0)
 
     def test_sram_slot_has_no_full_key(self) -> None:
         self.assertEqual(set(Slot.__dataclass_fields__), {"fingerprint", "phys"})
@@ -323,6 +332,50 @@ class TestDescriptorAndHBM(unittest.TestCase):
         after = tkv.finish_get(1, [0])
         self.assertIn(0, after.misses)
         self.assertEqual(after.recirculations, 0)
+
+    def test_finish_get_retries_while_hazarded(self) -> None:
+        tkv = TensorKVAppliance(ApplianceConfig(n_pages=8, n_buckets=8, block_size=16))
+        tkv.put(1, 0, b"OLD")
+        tkv.begin_evict_key(1, 0)
+        r = tkv.finish_get(1, [0], max_recirc=4)
+        self.assertGreaterEqual(r.recirculations, 4)
+        self.assertIn(0, r.misses)
+        tkv.complete_evict_key(1, 0)
+        after = tkv.finish_get(1, [0], max_recirc=4)
+        self.assertEqual(after.recirculations, 0)
+        self.assertIn(0, after.misses)
+
+    def test_scheduled_evict_pumped_by_finish_get(self) -> None:
+        tkv = TensorKVAppliance(ApplianceConfig(n_pages=8, n_buckets=8, block_size=16))
+        tkv.put(1, 0, b"OLD")
+        tkv.schedule_evict(1, 0, delay_ns=80)
+        mid = tkv.get(1, [0])
+        self.assertGreater(mid.recirculations, 0)
+        self.assertIn(0, mid.misses)
+        after = tkv.finish_get(1, [0], max_recirc=8)
+        self.assertIn(0, after.misses)
+        self.assertNotIn(b"OLD", after.payload)
+        self.assertEqual(tkv.table.lookup(pack_key(1, 0)), None)
+
+    def test_world_after_fires_at_deadline(self) -> None:
+        world = World()
+        seen: list[int] = []
+        world.after(50, lambda: seen.append(world.now_ns))
+        world.run_until(40)
+        self.assertEqual(seen, [])
+        world.run_until(50)
+        self.assertEqual(seen, [50])
+
+    def test_prompt_hash_is_stable(self) -> None:
+        self.assertEqual(prompt_hash([1, 2, 3]), prompt_hash([1, 2, 3]))
+        self.assertNotEqual(prompt_hash([1, 2, 3]), prompt_hash([1, 2, 4]))
+
+    def test_stats_include_bank_locks(self) -> None:
+        tkv = TensorKVAppliance(ApplianceConfig(n_pages=8, n_buckets=4, block_size=16))
+        tkv.put(1, 0, b"x")
+        tkv.evict_key(1, 0)
+        self.assertIn("bank_locks", tkv.stats())
+        self.assertGreaterEqual(tkv.stats()["bank_locks"], 1)
 
     def test_libtkv_posts_64b_descriptor(self) -> None:
         ctx = TensorKVContext(TensorKVAppliance(ApplianceConfig(block_size=16, n_pages=8, n_buckets=8)))
@@ -454,6 +507,43 @@ class TestBaselinesAndPaperTables(unittest.TestCase):
         self.assertTrue(r["second_prefix_hit"])
         self.assertGreater(r["leaf_blocks"], 0)
 
+    def test_engine_decode_and_finish_keeps_prefix(self) -> None:
+        eng = PagedEngine(bytes_per_token=81_920)
+        prefix = list(range(32))
+        first = eng.submit(1, prefix, prefix_tokens=prefix)
+        self.assertFalse(first.prefix_hit)
+        second = eng.submit(2, prefix + [9, 8, 7], prefix_tokens=prefix)
+        self.assertTrue(second.prefix_hit)
+        tbt = eng.decode(2, 42)
+        self.assertGreater(tbt, 0.0)
+        self.assertEqual(eng.stats.decode_steps, 1)
+        eng.finish(2, keep_prefix=True)
+        still = eng.tkv.probe(prompt_hash(prefix))
+        self.assertTrue(still.hit)
+
+    def test_engine_finish_releases_probe_refcount(self) -> None:
+        eng = PagedEngine(bytes_per_token=81_920)
+        prefix = list(range(32))
+        eng.submit(1, prefix, prefix_tokens=prefix)
+        rec = next(iter(eng.tkv.device.prefix.table.values()))
+        self.assertEqual(rec.refcount, 1)
+        eng.submit(2, prefix + [9], prefix_tokens=prefix)
+        rec = next(iter(eng.tkv.device.prefix.table.values()))
+        self.assertGreaterEqual(rec.refcount, 2)
+        eng.finish(2, keep_prefix=True)
+        rec = next(iter(eng.tkv.device.prefix.table.values()))
+        self.assertEqual(rec.refcount, 1)
+        self.assertTrue(eng.tkv.probe(prompt_hash(prefix)).hit)
+
+    def test_sglang_longest_leaf(self) -> None:
+        sgl = SGLangEngine()
+        leaf = sgl.insert_prefix(list(range(32)))
+        self.assertGreater(len(leaf.block_ids), 0)
+        req = sgl.activate(list(range(32)) + [99, 100])
+        self.assertTrue(req.prefix_hit)
+        self.assertEqual(req.prefix_len, 32)
+        self.assertGreater(sgl.paged.stats.skipped_prefill_tokens, 0)
+
     def test_engine_counts_logical_kv_bytes(self) -> None:
         eng = PagedEngine(bytes_per_token=81_920)
         req = eng.submit(1, list(range(32)))
@@ -531,6 +621,19 @@ class TestZipfAndWorkloads(unittest.TestCase):
         self.assertGreater(h["summary_ns"]["p50"], 0)
         self.assertGreater(h["summary_ns"]["p99"], h["summary_ns"]["p50"])
         self.assertGreater(h["slow_path_summary_ns"]["p50"], h["summary_ns"]["p50"])
+
+    def test_fingerprint_victim_at_high_fill(self) -> None:
+        r = fingerprint_and_victim()
+        self.assertEqual(r["sram_slot_fields"], ("fingerprint", "phys"))
+        self.assertGreater(r["hbm_key_verifies"], 0)
+        self.assertGreater(r["size"], 0)
+        self.assertGreaterEqual(r["slow_inserts"] + r["extra_slow"], 0)
+
+    def test_async_put_serialize_is_link_rate(self) -> None:
+        r = async_put_interference()
+        self.assertAlmostEqual(r["put_isolation_ms"], 40.0, delta=1.0)
+        self.assertLess(r["throughput_drop"], 0.05)
+        self.assertGreater(r["overlapped_ms"], 30.0)
 
     def test_isolation_experiment_four_regimes(self) -> None:
         iso = isolation_experiment(duration_s=3.0, tick_us=50.0, interference_start_s=1.0, interference_end_s=2.0)

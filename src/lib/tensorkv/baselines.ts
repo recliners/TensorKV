@@ -1,3 +1,4 @@
+import { TKV_NETWORK_NS, TKV_PCIE_DMA_NS, TKV_RMT_NS, serializeMs } from "./timing";
 import {
   BYTES_PER_TOKEN_LLAMA70B_INT4,
   BYTES_PER_TOKEN_MIXTRAL_FP8,
@@ -10,9 +11,7 @@ import {
   TOKENS_PER_BLOCK,
 } from "./types";
 
-export const TKV_NETWORK_NS = 800;
-export const TKV_RMT_NS = 150;
-export const TKV_PCIE_DMA_NS = 1150;
+export { TKV_NETWORK_NS, TKV_RMT_NS, TKV_PCIE_DMA_NS, serializeMs } from "./timing";
 export const RDMA_NETWORK_NS = 2100;
 export const RDMA_POINTER_CHASE_NS = 4500;
 export const RDMA_SOFT_ALLOC_NS = 6500;
@@ -51,11 +50,6 @@ export const ENERGY_PARTS: Record<string, { compute_w: number; mem_w: number; sw
   dpu: { compute_w: 585, mem_w: 235, switch_w: 25, tok_s: 1420 },
   tensorkv: { compute_w: 590, mem_w: 328, switch_w: 25, tok_s: 1600 },
 };
-
-export function serializeMs(nBytes: number, gbps: number) {
-  if (nBytes <= 0 || gbps <= 0) return 0;
-  return (nBytes * 8) / gbps / 1e6;
-}
 
 export function uncachedLogicalGet(path: string, nBlocks: number) {
   if (path === "tensorkv") {
@@ -260,6 +254,35 @@ export function energySim(path: string) {
   return { path, ...p, wallW: wall, jPerTok: wall / p.tok_s };
 }
 
+export function asyncPutInterference(putBytes = 500_000_000, decodeMs = 42.1) {
+  const serial = serializeMs(putBytes, LINK_GBPS);
+  const overlapped = Math.min(decodeMs, serial);
+  const exposed = Math.max(0, serial - decodeMs);
+  const tbt = decodeMs + exposed + 0.5;
+  const tokDecode = 1515;
+  const tokBoth = tokDecode * (decodeMs / tbt);
+  return {
+    decodeOnlyMs: decodeMs,
+    putIsolationMs: serial,
+    overlappedMs: overlapped,
+    tbtMs: tbt,
+    tokensPerSDecode: tokDecode,
+    tokensPerSBoth: tokBoth,
+    throughputDrop: 1 - tokBoth / tokDecode,
+  };
+}
+
+export function nvshmemReference() {
+  return {
+    chunkBytes: 2 * 1024 * 1024,
+    link: "400Gbps RoCEv2",
+    effectiveGbS: 42,
+    p99Us: 18,
+    uncachedScatteredP99Us: 45,
+    note: "Distinct 400Gbps / 2MB-chunk platform; not mixed into 4KB GET ablation.",
+  };
+}
+
 export function runBaselineSuite() {
   return {
     ttft: (["tensorkv", "host_a100", "host_h100", "rdma_opt", "rpc", "dpu"] as const).map((p) => ttftSim(p)),
@@ -272,5 +295,7 @@ export function runBaselineSuite() {
     moeTbt: Object.fromEntries(Object.keys(MOE_16WAY_MS).map((k) => [k, moeTbt(k)])),
     ablation: ablationTable(),
     energy: Object.keys(ENERGY_PARTS).map(energySim),
+    asyncPut: asyncPutInterference(),
+    nvshmem: nvshmemReference(),
   };
 }

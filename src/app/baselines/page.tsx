@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Bar,
   BarChart,
@@ -33,6 +33,10 @@ export default function BaselinesPage() {
       paced: simulateAttentionIncast({ paced: true }),
     });
   };
+
+  useEffect(() => {
+    run();
+  }, []);
 
   return (
     <SiteShell>
@@ -216,11 +220,38 @@ export default function BaselinesPage() {
                     爆破：到达 {incast.blast.arrivalGbps} Gbps，丢包 {incast.blast.drops}
                   </p>
                   <p>
-                    信用整形：到达 {incast.paced.arrivalGbps} Gbps，丢包 {incast.paced.drops}
+                    信用整形：到达 {incast.paced.arrivalGbps} Gbps，丢包 {incast.paced.drops}，GPU RX 丢 {incast.paced.gpuDrops}
                   </p>
                 </CardContent>
               </Card>
             )}
+          </div>
+
+          <div className="grid gap-4 lg:grid-cols-2">
+            <Card className="bg-card/80">
+              <CardHeader>
+                <CardTitle className="text-base">异步 PUT 与 decode 重叠</CardTitle>
+                <CardDescription>0.5 GB 在 100GbE 上约 40 ms，叠在 42.1 ms decode 上只露出很小的尾巴。</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-2 text-sm">
+                <p>PUT 隔离 {data.asyncPut.putIsolationMs.toFixed(1)} ms · 重叠 {data.asyncPut.overlappedMs.toFixed(1)} ms · TBT {data.asyncPut.tbtMs.toFixed(1)} ms</p>
+                <p>
+                  吞吐下降 {(data.asyncPut.throughputDrop * 100).toFixed(2)}%（{data.asyncPut.tokensPerSDecode} → {data.asyncPut.tokensPerSBoth.toFixed(0)} tok/s）
+                </p>
+              </CardContent>
+            </Card>
+            <Card className="bg-card/80">
+              <CardHeader>
+                <CardTitle className="text-base">NVSHMEM 参照点</CardTitle>
+                <CardDescription>400 Gbps / 2 MB chunk 的另一套平台，不混进 4 KB GET 消融。</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-2 text-sm">
+                <p>
+                  有效 {data.nvshmem.effectiveGbS} GB/s · P99 {data.nvshmem.p99Us} µs · 未缓存散列 P99 {data.nvshmem.uncachedScatteredP99Us} µs
+                </p>
+                <p className="text-xs text-muted-foreground">{data.nvshmem.note}</p>
+              </CardContent>
+            </Card>
           </div>
         </div>
       )}

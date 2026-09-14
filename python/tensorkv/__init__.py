@@ -8,14 +8,18 @@ from .constants import (
     TOKENS_PER_BLOCK,
 )
 from .engine import PagedEngine
+from .hashutil import prompt_hash
 from .libtkv import TensorKVContext, open_device
+from .sglang import SGLangEngine
 
 __all__ = [
     "ApplianceConfig",
     "TensorKVAppliance",
     "TensorKVContext",
     "PagedEngine",
+    "SGLangEngine",
     "open_device",
+    "prompt_hash",
     "run_baseline_suite",
     "BLOCK_SIZE_BYTES",
     "BYTES_PER_TOKEN_LLAMA70B_INT4",

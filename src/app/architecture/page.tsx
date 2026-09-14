@@ -106,10 +106,10 @@ export default function ArchitecturePage() {
         <CardContent className="grid gap-3 text-sm md:grid-cols-5">
           {[
             "GET(Block X)",
-            "慢路径决定回收 X",
+            "World.after 预约回收 X",
             "Hazard=1",
-            "快路径再循环等待",
-            "清映射后 GET → MISS",
+            "finishGet 泵时钟并再循环",
+            "事件触发后清映射 → MISS",
           ].map((s, i) => (
             <div key={s} className="rounded-lg bg-muted/60 p-3">
               <div className="font-mono text-xs text-primary">{i + 1}</div>

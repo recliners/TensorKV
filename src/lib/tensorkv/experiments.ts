@@ -1,6 +1,10 @@
 import { TensorKVAppliance, TensorKVContext } from "./appliance";
 import { runBaselineSuite, ttftSim } from "./baselines";
+import { CuckooTable } from "./core";
+import { PagedEngine } from "./engine";
+import { SGLangEngine } from "./sglang";
 import {
+  DEFAULT_CREDIT_GBPS,
   EVAL_EVICTION,
   EVAL_TBT,
   EVAL_TTFT,
@@ -8,20 +12,18 @@ import {
   FAST_PATH_SRAM_HIT_NS,
   HANDLE_INSTALL_NS,
   HAZARD_RECIRC_NS,
+  LINK_GBPS,
   ShareGPTWorkload,
   SLOW_PATH_CUCKOO_NS,
   SplitMix64,
   ZIPF_ALPHA,
   ZipfSampler,
-  mix64,
+  packKey,
+  promptHash,
 } from "./types";
 import { VirtualOutputQueues, simulateAttentionIncast, simulateNoisyNeighbor } from "./transport";
 
-export function promptHash(tokens: number[]): bigint {
-  let h = 0x243f6a8885a308d3n;
-  for (const t of tokens) h = mix64(h ^ BigInt(t >>> 0));
-  return h;
-}
+export { promptHash };
 
 export function hashPromptText(s: string): bigint {
   return promptHash(Array.from(s, (c) => c.charCodeAt(0)));
@@ -86,6 +88,10 @@ export function occupancySweep(loads = [0.5, 0.7, 0.8, 0.9, 0.95]) {
     const extraNs =
       (tkv.scoreboard.recirculations - recirc0) * HAZARD_RECIRC_NS + churnSlow * (SLOW_PATH_CUCKOO_NS - FAST_PATH_SRAM_HIT_NS);
     const idealNs = nOps * FAST_PATH_HBM_HIT_NS;
+    const head = new ZipfSampler(Math.max(1, live.length), ZIPF_ALPHA, new SplitMix64(100n)).empiricalHeadShare(
+      2000,
+      Math.max(1, Math.floor(live.length / 20)),
+    );
     return {
       load,
       fillSlowInsertRate: fillSlow,
@@ -95,6 +101,10 @@ export function occupancySweep(loads = [0.5, 0.7, 0.8, 0.9, 0.95]) {
       victimBuffer: tkv.table.victimBuffer.size,
       kicks: tkv.table.kicks - kicks0,
       throughputKeep: extraNs ? idealNs / (idealNs + extraNs) : 1,
+      extraNs,
+      idealNs,
+      serviceNs: idealNs + extraNs,
+      zipfHeadShare: head,
       bucketHist: tkv.table.occupancyHistogram(),
     };
   });
@@ -134,27 +144,48 @@ export function monotonicRace() {
   };
 }
 
-export function prefixActivation() {
-  const ctx = new TensorKVContext(new TensorKVAppliance({ nBuckets: 64, nPages: 256, blockSize: 64 }));
-  const prefix = Array.from({ length: 48 }, (_, i) => i);
-  const ph = promptHash(prefix);
-  for (let i = 0; i < 3; i++) ctx.putAsync(1, i, new Uint8Array(8).fill(i));
-  ctx.device.publishPrefix(ph, 1, [0, 1, 2]);
-  const miss = ctx.probe(promptHash([9, 8, 7]));
-  const hit = ctx.probe(ph);
-  const composedHit = ttftSim("tensorkv", 32768);
-  const composedMiss = ttftSim("recompute", 32768);
+export function prefixActivation(nPrefixTokens = 256) {
+  const nPages = Math.max(256, Math.floor(nPrefixTokens / 16) * 4 + 64);
+  const nBuckets = Math.max(64, Math.floor(nPages / 2));
+  const engine = new PagedEngine(
+    new TensorKVContext(new TensorKVAppliance({ nPages, nBuckets, storePayloads: false })),
+  );
+  const prefix = Array.from({ length: nPrefixTokens }, (_, i) => i);
+  const first = engine.submit(1, [...prefix, 1000, 1001], prefix);
+  const second = engine.submit(2, [...prefix, 2000, 2001], prefix);
+  const third = engine.submit(3, Array.from({ length: 100 }, (_, i) => 300 + i), Array.from({ length: 60 }, (_, i) => 300 + i));
+  const hitRef = ttftSim("tensorkv", nPrefixTokens);
+  const missRef = ttftSim("recompute", nPrefixTokens);
   return {
-    firstMiss: !miss.hit,
-    secondHit: hit.hit,
-    handles: hit.handles,
-    ref: hit.refcount,
-    hbmAccessed: hit.hbmAccessed,
-    evalSetupMs: 18,
-    evalRecomputeMs: 1200,
-    composedHitMs: composedHit.totalMs,
-    composedMissMs: composedMiss.totalMs,
-    ttftGapMs: composedMiss.totalMs - composedHit.totalMs,
+    nPrefixTokens,
+    firstMiss: !first.prefixHit,
+    secondHit: second.prefixHit,
+    firstPrefixHit: first.prefixHit,
+    secondPrefixHit: second.prefixHit,
+    thirdPrefixHit: third.prefixHit,
+    handles: second.prefixBlocks,
+    ref: 0,
+    hbmAccessed: false,
+    skippedTokens: engine.stats.skippedPrefillTokens,
+    engineHits: engine.stats.prefixHits,
+    engineMisses: engine.stats.prefixMisses,
+    firstTtftMs: Number(first.ttftMs.toFixed(4)),
+    secondTtftMs: Number(second.ttftMs.toFixed(4)),
+    ttftGapMs: Number((first.ttftMs - second.ttftMs).toFixed(4)),
+    firstTtftParts: {
+      setup: Number(first.ttftSetupMs.toFixed(4)),
+      fetch: Number(first.ttftFetchMs.toFixed(4)),
+      compute: Number(first.ttftComputeMs.toFixed(4)),
+    },
+    secondTtftParts: {
+      setup: Number(second.ttftSetupMs.toFixed(4)),
+      fetch: Number(second.ttftFetchMs.toFixed(4)),
+      compute: Number(second.ttftComputeMs.toFixed(4)),
+    },
+    evalSetupMs: 18 * (nPrefixTokens / 32768),
+    evalRecomputeMs: 1200 * (nPrefixTokens / 32768),
+    composedHitMs: hitRef.totalMs,
+    composedMissMs: missRef.totalMs,
     handleInstallNs: HANDLE_INSTALL_NS,
   };
 }
@@ -382,7 +413,7 @@ export function drrFairness() {
   const voq = new VirtualOutputQueues(16384);
   let seq = 0;
   const nTenants = 4;
-  const packetsEach = 32;
+  const packetsEach = 64;
   for (let r = 0; r < packetsEach; r++) {
     for (let t = 0; t < nTenants; t++) {
       voq.enqueue({ readyAt: r, opcode: "GET", contextId: t, size: 4096, seq: seq++, tenant: "" });
@@ -390,26 +421,110 @@ export function drrFairness() {
     voq.enqueue({ readyAt: r, opcode: "PUT", contextId: 100, size: 4096, seq: seq++, tenant: "put" });
   }
   const served = new Map<number, number>();
+  let putsWhileGets = 0;
+  const totalGets = nTenants * packetsEach;
+  let getsDone = 0;
   while (voq.pending()) {
     const pkt = voq.dequeue();
     if (!pkt) break;
     served.set(pkt.contextId, (served.get(pkt.contextId) ?? 0) + pkt.size);
+    if (pkt.opcode === "PUT" && getsDone < totalGets) putsWhileGets += 1;
+    if (pkt.opcode === "GET") getsDone += 1;
   }
   const bytes = [0, 1, 2, 3].map((t) => served.get(t) ?? 0);
   const sum = bytes.reduce((a, b) => a + b, 0);
   const sq = bytes.reduce((a, b) => a + b * b, 0);
   const jain = sq ? (sum * sum) / (nTenants * sq) : 0;
-  return { bytesPerTenant: bytes, jainFairness: Number(jain.toFixed(4)), preemptions: voq.preemptions };
+  const mn = Math.min(...bytes);
+  const mx = Math.max(...bytes);
+  return {
+    bytesPerTenant: bytes,
+    jainFairness: Number(jain.toFixed(4)),
+    preemptions: voq.preemptions,
+    maxMinRatio: mn ? mx / mn : Infinity,
+    putBytes: served.get(100) ?? 0,
+    getsFinishBeforePut: putsWhileGets === 0,
+  };
+}
+
+export function creditVsGemvSweep(gemvGbps = DEFAULT_CREDIT_GBPS, credits = [10, 20, 40, 80, 100]) {
+  return credits.map((c) => {
+    const blast = simulateAttentionIncast({ paced: false, gemvGbps });
+    const paced = simulateAttentionIncast({ paced: true, creditGbps: c, gemvGbps });
+    return {
+      creditGbps: c,
+      gemvGbps,
+      linkGbps: LINK_GBPS,
+      pacedDrops: paced.drops,
+      blastDrops: blast.drops,
+      gpuDrops: paced.gpuDrops,
+      pacedArrivalGbps: paced.arrivalGbps,
+      overflowBytes: paced.overflowBytes,
+      gpuOverflowBytes: paced.gpuOverflowBytes,
+      creditMatchesDrain: Math.abs(c - gemvGbps) < 1e-6,
+      overCredit: c > gemvGbps + 1e-6,
+    };
+  });
+}
+
+export function fingerprintAndVictim(nBuckets = 64, fill = 0.97) {
+  const table = new CuckooTable(nBuckets);
+  const cap = table.capacity;
+  const n = Math.floor(cap * fill);
+  for (let i = 0; i < n; i++) table.insert(packKey(1, i), i);
+  for (let i = 0; i < n; i++) {
+    if (table.lookup(packKey(1, i)) !== i) throw new Error(`fingerprint lookup missed ${i}`);
+  }
+  let extraSlow = 0;
+  for (let i = n; i < n + Math.floor(cap / 8); i++) {
+    if (table.insert(packKey(2, i), i) === "slow") extraSlow += 1;
+  }
+  return {
+    nBuckets,
+    capacity: cap,
+    fill,
+    size: table.size,
+    slowInserts: table.slowInserts,
+    fastInserts: table.fastInserts,
+    kicks: table.kicks,
+    tagCollisions: table.tagCollisions,
+    hbmKeyVerifies: table.hbmKeyVerifies,
+    victimBuffer: table.victimBuffer.size,
+    occupancyHist: table.occupancyHistogram(),
+    extraSlow,
+    sramSlotFields: ["fingerprint", "phys"] as const,
+  };
+}
+
+export function sglangRadix() {
+  const eng = new SGLangEngine();
+  const prefix = Array.from({ length: 64 }, (_, i) => i);
+  const leaf = eng.insertPrefix(prefix);
+  const second = eng.activate([...prefix, 7, 8, 9]);
+  return {
+    leafBlocks: leaf.blockIds.length,
+    secondPrefixHit: second.prefixHit,
+    probeHits: eng.tkv.device.prefix.hits,
+    skippedTokens: eng.paged.stats.skippedPrefillTokens,
+    leaves: eng.leaves.size,
+  };
 }
 
 export function runAllExperiments() {
   const iso = isolationExperiment();
   const ev = evictionSensitivity();
+  const occupancy = occupancySweep();
+  const scatterGather = scatterGatherRtts();
+  const monotonic = monotonicRace();
+  const prefix = prefixActivation();
+  const drr = drrFairness();
+  const fingerprint = fingerprintAndVictim();
+  const sglang = sglangRadix();
   return {
-    occupancy: occupancySweep(),
-    scatterGather: scatterGatherRtts(),
-    monotonic: monotonicRace(),
-    prefix: prefixActivation(),
+    occupancy,
+    scatterGather,
+    monotonic,
+    prefix,
     eviction: ev,
     isolation: iso.map((r) => ({
       policy: r.policy,
@@ -428,10 +543,43 @@ export function runAllExperiments() {
       blast: simulateAttentionIncast({ paced: false }),
       paced: simulateAttentionIncast({ paced: true }),
     },
-    drr: drrFairness(),
+    drr,
     sharegpt: sharegptEviction(0.6),
     sharegpt80: sharegptEviction(0.8),
     getLatency: getLatencyHistogram(),
+    fingerprint,
+    creditVsGemv: creditVsGemvSweep(),
+    sglang,
+    selfCheck: selfCheck({ prefix, monotonic, scatterGather, eviction: ev, drr, sglang, fingerprint }),
     baselines: runBaselineSuite(),
   };
+}
+
+export function selfCheck(snap?: {
+  prefix?: ReturnType<typeof prefixActivation>;
+  monotonic?: ReturnType<typeof monotonicRace>;
+  scatterGather?: ReturnType<typeof scatterGatherRtts>;
+  eviction?: ReturnType<typeof evictionSensitivity>;
+  drr?: ReturnType<typeof drrFairness>;
+  sglang?: ReturnType<typeof sglangRadix>;
+  fingerprint?: ReturnType<typeof fingerprintAndVictim>;
+}) {
+  const failures: string[] = [];
+  const prefix = snap?.prefix ?? prefixActivation(256);
+  if (prefix.firstPrefixHit) failures.push("first PagedEngine submit should miss the prefix");
+  if (!prefix.secondPrefixHit) failures.push("second PagedEngine submit should hit the prefix");
+  if (prefix.secondTtftMs >= prefix.firstTtftMs) failures.push("prefix hit TTFT should be below miss TTFT");
+  const race = snap?.monotonic ?? monotonicRace();
+  if (!race.monotonic) failures.push("GET∥EVICT must be monotonic");
+  const sg = snap?.scatterGather ?? scatterGatherRtts(6);
+  if (!sg.gatheredOk || sg.tensorkvRtts !== 1) failures.push("scatter-gather should be 1 RTT");
+  const ev = snap?.eviction ?? evictionSensitivity();
+  if (ev.lfru_60.prefixSurvival < ev.lru_60.prefixSurvival + 40) failures.push("LFRU should keep far more prefix than LRU at 60%");
+  const drr = snap?.drr ?? drrFairness();
+  if (drr.jainFairness < 0.98 || !drr.getsFinishBeforePut) failures.push("DRR should finish GETs first and stay fair");
+  const sgl = snap?.sglang ?? sglangRadix();
+  if (!sgl.secondPrefixHit) failures.push("SGLang longest-leaf activate should PROBE-hit");
+  const fp = snap?.fingerprint ?? fingerprintAndVictim();
+  if (fp.hbmKeyVerifies <= 0) failures.push("fingerprint match must verify the full HBM key");
+  return { ok: failures.length === 0, failures };
 }

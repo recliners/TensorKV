@@ -31,7 +31,8 @@
 | 16 源 × 128KB attention incast | `incast.py` | `simulateAttentionIncast` |
 | 512b 影子行 + 1 周期 bank lock | `crossbar.py` | `crossbar.ts` |
 | 64B 描述符 / 异步 CQ | `descriptor.py` `libtkv.py` | `descriptor.ts` `TensorKVContext` |
-| PagedAttention + SGLang radix 叶 | `engine.py` `sglang.py` | `/engine` |
+| PagedAttention + SGLang radix 叶 | `engine.py` `sglang.py` | `engine.ts` `sglang.ts` `/engine` |
+| 离散事件时钟与预约回收 | `world.py` `schedule_evict` | `world.ts` `scheduleEvict` |
 | Host/RDMA/RPC/DPU/Mixtral/消融 | `baselines.py` | `baselines.ts` `/baselines` |
 
 ## 本地运行
@@ -57,18 +58,18 @@ PYTHONPATH=python python3 -m tensorkv baselines
 页面：
 
 - `/` 总览
-- `/playground` 四原语工作台
+- `/playground` 四原语工作台（64B 描述符、World 调度 GET×EVICT）
 - `/architecture` 双路径与一致性互锁
-- `/engine` 共享前缀的推理控制流
+- `/engine` 共享前缀的推理控制流（PagedEngine + SGLang radix，finish 释放 refcount）
 - `/isolation` 吵闹邻居：FIFO / 仅 QoS / 仅整形 / 两者
-- `/experiments` 占用、LFRU 洪水、ShareGPT、GET 直方图、隔离四档、Scatter-Gather、单调读
-- `/baselines` TTFT/TBT、DPU、带宽、MoE、消融、能量、incast
+- `/experiments` 占用、LFRU、ShareGPT、GET 直方图、指纹/victim、credit vs GEMV、SGLang、隔离四档、浏览器自检
+- `/baselines` TTFT/TBT、DPU、带宽、MoE、消融、能量、incast、异步 PUT、NVSHMEM
 
 ## 测试床现象（本机快照）
 
 `eval/results/latest.json` 由 `python -m tensorkv report` 写出。当前一轮自查修复后再测的可见差距：
 
-- **占用** 50%→95%：填充慢路径 0.5%→12%，换入慢路径 1.8%→68%，cuckoo kick 26→6297，吞吐保持 99%→69%，victim buffer 在 90% 出现、95% 有 44 条。
+- **占用** 50%→95%：填充慢路径 0.5%→12%，换入慢路径 1.8%→68%，cuckoo kick 26→6297，吞吐保持 99%→69%，victim buffer 在 90% 出现、95% 有 44 条。Zipf 头份额约 79%→83%。
 - **LFRU 洪水**（先 PROBE 再插入 unique、期间不碰前缀）：60% 容量前缀存活 LRU 30% / LFRU 100%；80% 为 65% / 100%。加权 TTFT 约 919 ms vs 263 ms。
 - **ShareGPT 多前缀**：60% 容量前缀存活 LRU 17% / LFRU 100%（差 83 个百分点）。
 - **隔离** 干扰段 P99：FIFO 200 ms（RTO） / QoS 40 ms（写引擎 HOL） / 整形 15 ms（GEMV 片） / 两者 3.5 ms（credit gather）。

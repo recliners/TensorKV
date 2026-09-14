@@ -82,6 +82,15 @@ def _print_report(result: dict) -> None:
         f"gap={pfx['ttft_gap_ms']:.1f}ms =="
     )
     print(f"== DRR jain={result['drr']['jain_fairness']} incast paced_drops={result['incast']['paced_drops']} ==")
+    fp = result["fingerprint"]
+    print(
+        f"== fingerprint  size={fp['size']}/{fp['capacity']} kicks={fp['kicks']} "
+        f"victim={fp['victim_buffer']} hbm_verify={fp['hbm_key_verifies']} =="
+    )
+    sgl = result["sglang"]
+    print(f"== SGLang radix  leaf_blocks={sgl['leaf_blocks']} second_hit={sgl['second_prefix_hit']} skipped={sgl.get('skipped_tokens')} ==")
+    gl = result["get_latency"]["summary_ns"]
+    print(f"== GET latency  p50={gl['p50']:.0f}ns p99={gl['p99']:.0f}ns ==")
 
 
 def cmd_experiment() -> int:

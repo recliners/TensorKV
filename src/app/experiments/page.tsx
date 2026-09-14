@@ -102,10 +102,30 @@ export default function ExperimentsPage() {
 
       {data ? (
         <div className="grid gap-4 lg:grid-cols-2">
+          <Card className="lg:col-span-2 bg-card/80">
+            <CardHeader>
+              <CardTitle className="text-base">浏览器自检</CardTitle>
+              <CardDescription>跑完实验套件后立刻断言前缀命中、单调读、LFRU、DRR、SGLang、指纹全键校验。</CardDescription>
+            </CardHeader>
+            <CardContent className="text-sm">
+              {data.selfCheck.ok ? (
+                <p className="text-emerald-400">全部通过（{data.selfCheck.failures.length} 失败项）。</p>
+              ) : (
+                <ul className="list-disc space-y-1 pl-5 text-destructive">
+                  {data.selfCheck.failures.map((f) => (
+                    <li key={f}>{f}</li>
+                  ))}
+                </ul>
+              )}
+            </CardContent>
+          </Card>
           <Card className="bg-card/80">
             <CardHeader>
               <CardTitle className="text-base">哈希占用：慢路径随负载升高</CardTitle>
-              <CardDescription>正确 Zipf + 高占用 churn。填充慢路径与 kick 次数应随 50%→95% 明显上升，吞吐保持率下降。</CardDescription>
+              <CardDescription>
+                正确 Zipf + 高占用 churn。填充慢路径与 kick 次数应随 50%→95% 明显上升，吞吐保持率下降。
+                Zipf 头份额 {data.occupancy.map((p) => `${Math.round(p.load * 100)}%→${(p.zipfHeadShare * 100).toFixed(0)}%`).join("，")}。
+              </CardDescription>
             </CardHeader>
             <CardContent className="h-[280px]">
               <ResponsiveContainer width="100%" height="100%">
@@ -152,15 +172,16 @@ export default function ExperimentsPage() {
             </CardHeader>
             <CardContent className="space-y-2 text-sm">
               <p>
-                TensorKV GET 只需 <Badge>1 RTT</Badge> 取回 {data.scatterGather.blocks} 个非连续块；未缓存 RDMA 是 1+N = {data.scatterGather.rdmaUncachedRtts} 次。
-                拼接校验：{data.scatterGather.gatheredOk ? "通过" : "失败"}。
+                PagedEngine：首次 {data.prefix.firstMiss ? "Miss" : "Hit"}，第二次 {data.prefix.secondHit ? "Hit" : "Miss"}，跳过 {data.prefix.skippedTokens} token。
+                引擎 TTFT {data.prefix.nPrefixTokens} token：miss {data.prefix.firstTtftMs.toFixed(2)} ms（compute {data.prefix.firstTtftParts.compute.toFixed(1)}）vs hit {data.prefix.secondTtftMs.toFixed(2)} ms（setup {data.prefix.secondTtftParts.setup.toFixed(2)} + fetch {data.prefix.secondTtftParts.fetch.toFixed(2)}），缺口 {data.prefix.ttftGapMs.toFixed(2)} ms。
               </p>
               <p>
                 GET∥EVICT：再循环 {String(data.monotonic.recirculated)}，危险期 Miss {String(data.monotonic.missDuring)}，危险期无旧载荷 {String(data.monotonic.noPayloadDuring)}，回收后 Miss {String(data.monotonic.postEvictMiss)}，脏读 {String(data.monotonic.staleRead)}，单调性 {data.monotonic.monotonic ? "成立" : "失败"}。
               </p>
               <p>
-                PROBE：首次 {data.prefix.firstMiss ? "Miss" : "Hit"}，登记后 {data.prefix.secondHit ? "Hit" : "Miss"}，未访问 HBM {String(!data.prefix.hbmAccessed)}。
-                32K 组合 TTFT：命中 {data.prefix.composedHitMs.toFixed(0)} ms vs 重算 {data.prefix.composedMissMs.toFixed(0)} ms，缺口 {data.prefix.ttftGapMs.toFixed(0)} ms。
+                TensorKV GET 只需 <Badge>1 RTT</Badge> 取回 {data.scatterGather.blocks} 个非连续块；未缓存 RDMA 是 1+N = {data.scatterGather.rdmaUncachedRtts} 次。
+                拼接校验：{data.scatterGather.gatheredOk ? "通过" : "失败"}。
+                32K 组合 TTFT：命中 {data.prefix.composedHitMs.toFixed(0)} ms vs 重算 {data.prefix.composedMissMs.toFixed(0)} ms。
               </p>
             </CardContent>
           </Card>
@@ -207,7 +228,7 @@ export default function ExperimentsPage() {
             </CardHeader>
             <CardContent className="space-y-2 text-sm">
               <p>
-                四租户 GET Jain = <Badge>{data.drr.jainFairness}</Badge>，抢占 {data.drr.preemptions} 次。字节 {[...data.drr.bytesPerTenant].join(" / ")}。
+                四租户 GET Jain = <Badge>{data.drr.jainFairness}</Badge>，抢占 {data.drr.preemptions} 次，GET 先于 PUT {String(data.drr.getsFinishBeforePut)}。字节 {[...data.drr.bytesPerTenant].join(" / ")}。
               </p>
               <p>
                 16 源 × 128 KB：爆破丢包 {data.incast.blast.drops}，credit 整形丢包 {data.incast.paced.drops}。
@@ -252,6 +273,53 @@ export default function ExperimentsPage() {
               </ResponsiveContainer>
               <p className="mt-2 text-xs text-muted-foreground">
                 60% 存活差 {data.sharegpt.lfruMinusLruSurvival} 个百分点；混合命中 LRU {data.sharegpt.lru.hitRate}% / LFRU {data.sharegpt.lfru.hitRate}%。
+              </p>
+            </CardContent>
+          </Card>
+
+          <Card className="bg-card/80">
+            <CardHeader>
+              <CardTitle className="text-base">指纹 + victim buffer</CardTitle>
+              <CardDescription>SRAM 槽只有 fingerprint/phys。97% 填充后再挤入 cap/8 个键。</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-2 text-sm">
+              <p>
+                槽字段 [{data.fingerprint.sramSlotFields.join(", ")}]，容量 {data.fingerprint.capacity}，占用 {data.fingerprint.size}，HBM 全键校验 {data.fingerprint.hbmKeyVerifies} 次。
+              </p>
+              <p>
+                慢路径插入 {data.fingerprint.slowInserts}，kick {data.fingerprint.kicks}，victim buffer {data.fingerprint.victimBuffer}，额外慢插入 {data.fingerprint.extraSlow}。
+              </p>
+            </CardContent>
+          </Card>
+
+          <Card className="bg-card/80">
+            <CardHeader>
+              <CardTitle className="text-base">Credit vs GEMV 排水</CardTitle>
+              <CardDescription>credit 对齐 40 Gbps 时 GPU RX 不溢；超过排水才积压。</CardDescription>
+            </CardHeader>
+            <CardContent className="h-[220px]">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={data.creditVsGemv}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.85 0.04 200 / 15%)" />
+                  <XAxis dataKey="creditGbps" stroke="#94a3b8" />
+                  <YAxis stroke="#94a3b8" />
+                  <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #334155" }} />
+                  <Legend />
+                  <Bar dataKey="gpuDrops" fill="#f87171" name="GPU RX 丢包" />
+                  <Bar dataKey="pacedDrops" fill="#64748b" name="ToR 丢包" />
+                </BarChart>
+              </ResponsiveContainer>
+            </CardContent>
+          </Card>
+
+          <Card className="bg-card/80">
+            <CardHeader>
+              <CardTitle className="text-base">SGLang radix 叶</CardTitle>
+              <CardDescription>最长前缀叶走 TKV_PROBE，不改线协议。</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-2 text-sm">
+              <p>
+                叶块数 {data.sglang.leafBlocks}，第二次 activate 前缀命中 {String(data.sglang.secondPrefixHit)}，PROBE hits {data.sglang.probeHits}，跳过 {data.sglang.skippedTokens} token。
               </p>
             </CardContent>
           </Card>

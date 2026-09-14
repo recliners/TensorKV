@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start --port 43123 --hostname 0.0.0.0",
     "lint": "eslint",
-    "test:algo": "python3 python/tests/test_tensorkv.py"
+    "test:algo": "python3 python/tests/test_tensorkv.py",
+    "test:ts": "tsc --noEmit"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",

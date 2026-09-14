@@ -119,6 +119,7 @@ class TensorKVAppliance:
         self.evict_ops = 0
         self.gathered_bytes = 0
         self.inflight_evict: set[int] = set()
+        self.credit_gbps = 40.0
 
     def _payload_bytes(self, context_id: int, seq_id: int, data: bytes | None) -> bytes:
         if not self.cfg.store_payloads:
@@ -219,6 +220,7 @@ class TensorKVAppliance:
         self.get_ops += 1
         if credit_gbps is not None:
             self.shaper.set_credit(credit_gbps)
+            self.credit_gbps = credit_gbps
             events.append(TraceEvent("GET", "fast", "credit", f"shaper={credit_gbps} Gbps"))
 
         events.append(
@@ -303,7 +305,7 @@ class TensorKVAppliance:
             if last.recirculations == 0:
                 last.recirculations = total_recirc
                 return last
-            self.world.advance(recirc_ns())
+            self.world.run_until(self.world.now_ns + recirc_ns())
             self.crossbar.advance(recirc_ns())
         assert last is not None
         last.recirculations = total_recirc
@@ -414,6 +416,23 @@ class TensorKVAppliance:
         self._evict_one(key, [], hazard_already_set=True)
         self.inflight_evict.discard(key)
 
+    def schedule_evict(self, context_id: int, block_id: int, delay_ns: int = 400) -> None:
+        """Begin a hazarded eviction and complete it on the discrete-event clock."""
+        self.begin_evict_key(context_id, block_id)
+
+        def _done() -> None:
+            self.complete_evict_key(context_id, block_id)
+
+        self.world.after(delay_ns, _done)
+
+    def release_prefix(self, prompt_hash: int) -> int:
+        rec = self.prefix.table.get(prompt_hash)
+        ref = self.prefix.release(prompt_hash)
+        if rec is not None:
+            for bid in rec.block_ids:
+                self.eviction.set_refcount(pack_key(rec.context_id, bid), ref)
+        return ref
+
     def _evict_one(self, key: int, events: list[TraceEvent], hazard_already_set: bool = False) -> None:
         ctx, bid = unpack_key(key)
         if not hazard_already_set:
@@ -488,6 +507,7 @@ class TensorKVAppliance:
             "lookup_stalls": self.crossbar.lookup_stalls,
             "hbm_key_verifies": self.table.hbm_key_verifies,
             "cuckoo_kicks": self.table.kicks,
+            "bank_locks": self.bank_locks,
             "puts": self.put_ops,
             "gets": self.get_ops,
             "probes": self.probe_ops,

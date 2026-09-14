@@ -11,16 +11,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .constants import BYTES_PER_TOKEN_LLAMA70B_INT4, DEFAULT_CREDIT_GBPS, LINK_GBPS, TOKENS_PER_BLOCK
-from .hashutil import mix64
+from .hashutil import prompt_hash
 from .libtkv import TensorKVContext
 from .timing import attention_compute_ms, serialize_ms, ttft_breakdown
 
-
-def prompt_hash(tokens: list[int]) -> int:
-    h = 0x243F6A8885A308D3
-    for t in tokens:
-        h = mix64(h ^ (t & 0xFFFFFFFF))
-    return h
+__all__ = ["PagedEngine", "Request", "EngineStats", "prompt_hash"]
 
 
 @dataclass
@@ -32,6 +27,7 @@ class Request:
     prefix_owner: int | None = None
     prefix_blocks: list[int] = field(default_factory=list)
     prefix_hit: bool = False
+    prefix_hash: int | None = None
     generated: int = 0
     ttft_ms: float = 0.0
     ttft_setup_ms: float = 0.0
@@ -85,6 +81,7 @@ class PagedEngine:
         prefix = prefix_tokens or []
         if prefix:
             ph = prompt_hash(prefix)
+            req.prefix_hash = ph
             probe = self.tkv.probe(ph)
             probe_ns = probe.latency_ns
             req.prefix_len = len(prefix)
@@ -192,6 +189,8 @@ class PagedEngine:
         req = self.requests.pop(req_id, None)
         if req is None:
             return
+        if req.prefix_hit and req.prefix_hash is not None:
+            self.tkv.device.release_prefix(req.prefix_hash)
         if keep_prefix and req.prefix_hit:
             self.tkv.evict(req.context_id, policy="all")
         elif keep_prefix and req.prefix_len:

@@ -77,4 +77,44 @@ export function probeDescriptor(promptHash: bigint): Descriptor {
   };
 }
 
-void OP_NAME;
+export function evictDescriptor(contextId: number, policy = 0): Descriptor {
+  return {
+    opcode: "EVICT",
+    contextId,
+    nBlocks: 0,
+    creditGbps: 0,
+    policy,
+    seqId: 0,
+    gpuPtr: 0n,
+    promptHash: 0n,
+    blockIds: [],
+  };
+}
+
+export function decodeDescriptor(raw: Uint8Array): Descriptor {
+  if (raw.length !== DESCRIPTOR_BYTES) throw new Error(`descriptor must be ${DESCRIPTOR_BYTES} bytes`);
+  const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
+  const op = view.getUint8(0);
+  const flags = view.getUint8(1);
+  const nBlocks = view.getUint16(2, true);
+  const contextId = view.getUint32(4, true);
+  const credit = view.getUint16(8, true);
+  const policy = view.getUint8(10);
+  const seqId = view.getUint32(12, true);
+  const gpuPtr = view.getBigUint64(16, true);
+  const promptHash = view.getBigUint64(24, true);
+  const blockIds: number[] = [];
+  const n = Math.max(0, Math.min(8, nBlocks));
+  for (let i = 0; i < n; i++) blockIds.push(view.getUint32(32 + i * 4, true));
+  return {
+    opcode: OP_NAME[op] ?? "PUT",
+    contextId,
+    nBlocks,
+    creditGbps: flags ? credit / 100 : 0,
+    policy,
+    seqId,
+    gpuPtr,
+    promptHash,
+    blockIds,
+  };
+}

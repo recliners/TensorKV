@@ -2,7 +2,8 @@
 
 import { useRef, useState } from "react";
 import { SiteShell } from "@/components/site-shell";
-import { TensorKVAppliance } from "@/lib/tensorkv/appliance";
+import { TensorKVAppliance, TensorKVContext } from "@/lib/tensorkv/appliance";
+import { decodeDescriptor, encodeDescriptor, putDescriptor } from "@/lib/tensorkv/descriptor";
 import { hashPromptText } from "@/lib/tensorkv/experiments";
 import type { TraceEvent } from "@/lib/tensorkv/types";
 import { Badge } from "@/components/ui/badge";
@@ -16,10 +17,13 @@ type Log = { t: number; events: TraceEvent[]; summary: string };
 
 export default function PlaygroundPage() {
   const tkvRef = useRef<TensorKVAppliance | null>(null);
+  const hostRef = useRef<TensorKVContext | null>(null);
   if (!tkvRef.current) {
     tkvRef.current = new TensorKVAppliance({ nBuckets: 32, nPages: 128, blockSize: 32 });
+    hostRef.current = new TensorKVContext(tkvRef.current);
   }
   const tkv = tkvRef.current;
+  const host = hostRef.current!;
   const [, bump] = useState(0);
   const refresh = () => bump((x) => x + 1);
 
@@ -30,6 +34,7 @@ export default function PlaygroundPage() {
   const [prompt, setPrompt] = useState("system-prompt");
   const [log, setLog] = useState<Log[]>([]);
   const [gathered, setGathered] = useState("");
+  const [descriptorHex, setDescriptorHex] = useState("");
 
   const push = (events: TraceEvent[], summary: string) => {
     setLog((prev) => [{ t: Date.now(), events, summary }, ...prev].slice(0, 24));
@@ -37,8 +42,10 @@ export default function PlaygroundPage() {
   };
 
   const onPut = () => {
-    const r = tkv.put(Number(ctx), Number(seq), new TextEncoder().encode(payload));
-    push(r.events, r.ok ? `PUT 成功 page=${r.phys} path=${r.path}` : r.error ?? "PUT 失败");
+    const r = host.putAsync(Number(ctx), Number(seq), new TextEncoder().encode(payload));
+    const desc = encodeDescriptor(putDescriptor(Number(ctx), Number(seq)));
+    setDescriptorHex([...desc].map((b) => b.toString(16).padStart(2, "0")).join(" "));
+    push(r.events, r.ok ? `PUT 成功 page=${r.phys} path=${r.path} · 64B 描述符 ticket=${host.cq.at(-1)?.ticket}` : r.error ?? "PUT 失败");
     setSeq(String(Number(seq) + 1));
   };
   const onGet = () => {
@@ -70,13 +77,12 @@ export default function PlaygroundPage() {
   const onRace = () => {
     const id = Number(seq) > 0 ? Number(seq) - 1 : 0;
     tkv.put(Number(ctx), id, new TextEncoder().encode("OLD-BLOCK"));
-    tkv.beginEvictKey(Number(ctx), id);
+    tkv.scheduleEvict(Number(ctx), id, 80);
     const mid = tkv.get(Number(ctx), [id]);
-    tkv.completeEvictKey(Number(ctx), id);
-    const after = tkv.get(Number(ctx), [id]);
+    const after = tkv.finishGet(Number(ctx), [id], 40, 8);
     push(
       [...mid.events, ...after.events],
-      `竞态：回收中 recirc=${mid.recirculations} miss=${mid.misses}; 完成后 miss=${after.misses}（单调读）`,
+      `World 调度回收：危险期 recirc=${mid.recirculations} miss=${mid.misses}; finishGet 泵时钟后 miss=${after.misses} recirc累计=${after.recirculations}（单调读）`,
     );
   };
 
@@ -135,9 +141,14 @@ export default function PlaygroundPage() {
                 TKV_EVICT
               </Button>
               <Button variant="destructive" onClick={onRace}>
-                GET×EVICT 竞态
+                GET×EVICT（World 调度）
               </Button>
             </div>
+            {descriptorHex ? (
+              <p className="rounded-md bg-muted p-2 font-mono text-[11px] break-all">
+                最近 PUT 描述符（{decodeDescriptor(Uint8Array.from(descriptorHex.split(" ").map((h) => parseInt(h, 16)))).opcode}）: {descriptorHex}
+              </p>
+            ) : null}
             {gathered ? (
               <p className="rounded-md bg-muted p-2 font-mono text-xs">
                 Gather 流：{gathered || "（空）"}
@@ -153,6 +164,10 @@ export default function PlaygroundPage() {
               ["负载", `${(stats.hashLoad * 100).toFixed(1)}%`],
               ["FIFO", String(stats.fifoDepth)],
               ["慢路径插入", String(stats.slowInserts)],
+              ["cuckoo kick", String(stats.cuckooKicks)],
+              ["bank lock", String(stats.bankLocks)],
+              ["world ns", String(tkv.world.nowNs)],
+              ["描述符", String(host.descriptorsPosted)],
             ].map(([k, v]) => (
               <Card key={k} size="sm" className="bg-card/80">
                 <CardContent className="pt-3">

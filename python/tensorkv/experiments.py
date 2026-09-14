@@ -435,6 +435,8 @@ def sglang_radix() -> dict:
         "leaf_blocks": len(leaf.block_ids),
         "second_prefix_hit": second.prefix_hit,
         "probe_hits": eng.tkv.device.prefix.hits,
+        "skipped_tokens": eng.paged.stats.skipped_prefill_tokens,
+        "leaves": len(eng.leaves),
     }
 
 

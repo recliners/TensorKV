@@ -22,6 +22,14 @@ def pack_key(context_id: int, block_id: int) -> int:
     return ((int(context_id) & MASK32) << 32) | (int(block_id) & MASK32)
 
 
+def prompt_hash(tokens: list[int]) -> int:
+    """Stable 64-bit hash of a token prefix, used as TKV_PROBE's key."""
+    h = 0x243F6A8885A308D3
+    for t in tokens:
+        h = mix64(h ^ (int(t) & MASK32))
+    return h
+
+
 def unpack_key(key: int) -> tuple[int, int]:
     return (key >> 32) & MASK32, key & MASK32
 

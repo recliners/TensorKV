@@ -60,3 +60,6 @@ class SGLangEngine:
 
     def decode_remote(self, req_id: int, new_token: int = 1) -> float:
         return self.paged.decode(req_id, new_token)
+
+    def finish(self, req_id: int, keep_prefix: bool = True) -> None:
+        self.paged.finish(req_id, keep_prefix=keep_prefix)

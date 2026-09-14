@@ -40,7 +40,8 @@ const MAP = [
   { section: "前缀感知 LFRU", code: "EvictionTracker（refcount>1 保护）" },
   { section: "Credit + VOQ/DRR", code: "CreditShaper / VirtualOutputQueues" },
   { section: "Crossbar commit", code: "AtomicCrossbar 1 周期 bank lock" },
-  { section: "64B 描述符", code: "descriptor.py / libtkv" },
+  { section: "64B 描述符", code: "descriptor.py / libtkv + World 时钟" },
+  { section: "PagedAttention / SGLang", code: "engine.py / sglang.py" },
   { section: "Mixtral / 基线", code: "baselines.py 可组合 TTFT/TBT/OOM" },
   { section: "16 源 incast", code: "incast.py 128KB fan-in" },
 ];

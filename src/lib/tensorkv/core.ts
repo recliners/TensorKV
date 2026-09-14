@@ -408,6 +408,13 @@ export class EvictionTracker {
     if (meta) meta.refcount = ref;
   }
 
+  bumpRefcount(keys: bigint[], delta = 1) {
+    for (const key of keys) {
+      const meta = this.blocks.get(key.toString());
+      if (meta) meta.refcount += delta;
+    }
+  }
+
   selectVictims(n: number, policy: "lru" | "lfru"): BlockMeta[] {
     const items = [...this.blocks.values()];
     if (!items.length || n <= 0) return [];

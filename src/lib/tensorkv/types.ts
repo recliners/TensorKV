@@ -69,6 +69,12 @@ export function packKey(ctx: number, block: number): bigint {
   return ((BigInt(ctx) & MASK32) << 32n) | (BigInt(block) & MASK32);
 }
 
+export function promptHash(tokens: number[]): bigint {
+  let h = 0x243f6a8885a308d3n;
+  for (const t of tokens) h = mix64(h ^ BigInt(t >>> 0));
+  return h;
+}
+
 export function unpackKey(key: bigint): [number, number] {
   return [Number((key >> 32n) & MASK32), Number(key & MASK32)];
 }
@@ -202,6 +208,11 @@ export class ZipfSampler {
   }
   sampleIndex(): number {
     return this.sample() - 1;
+  }
+  empiricalHeadShare(draws = 4000, head = 1) {
+    let hits = 0;
+    for (let i = 0; i < draws; i++) if (this.sample() <= head) hits++;
+    return hits / draws;
   }
 }
 
