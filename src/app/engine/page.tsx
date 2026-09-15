@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useMemo, useState } from "react";
 import { SiteShell } from "@/components/site-shell";
 import { TensorKVAppliance, TensorKVContext } from "@/lib/tensorkv/appliance";
@@ -81,7 +82,11 @@ export default function EnginePage() {
     <SiteShell>
       <h1 className="text-2xl font-semibold tracking-tight">推理引擎工作流</h1>
       <p className="mt-2 mb-6 max-w-3xl text-sm text-muted-foreground">
-        这一页跑的是与 Python <code>PagedEngine</code> / <code>SGLangEngine</code> 同一套控制流：调度器 PROBE，缓存引擎 PUT/EVICT，Attention 路径 JIT GET，radix 叶走最长前缀匹配。
+        这一页跑的是与 Python <code>PagedEngine</code> / <code>SGLangEngine</code> 同一套控制流：调度器 PROBE，缓存引擎 PUT/EVICT，Attention 路径 JIT GET，radix 叶走最长前缀匹配。ShareGPT 到达过程与连续批见{" "}
+        <Link href="/serve" className="underline underline-offset-2">
+          /serve
+        </Link>
+        。
       </p>
       <Button onClick={run}>跑一遍共享前缀 + radix 叶</Button>
       <div className="mt-6 grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">

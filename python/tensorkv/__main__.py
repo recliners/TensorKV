@@ -1,4 +1,4 @@
-"""CLI: python -m tensorkv [demo|experiment|engine|baselines|selftest|report]"""
+"""CLI: python -m tensorkv [demo|experiment|engine|baselines|serve|replay|selftest|report]"""
 
 from __future__ import annotations
 
@@ -107,6 +107,20 @@ def cmd_report() -> int:
     return 0
 
 
+def cmd_serve() -> int:
+    from tensorkv.serve import run_serving
+
+    print(json.dumps(run_serving(), indent=2, default=str))
+    return 0
+
+
+def cmd_replay() -> int:
+    from tensorkv.replay import mixed_trace, session_trace
+
+    print(json.dumps({"mixed": mixed_trace(), "session": session_trace()}, indent=2, default=str))
+    return 0
+
+
 def cmd_baselines() -> int:
     from tensorkv.baselines import run_baseline_suite
 
@@ -124,7 +138,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="TensorKV software implementation")
     parser.add_argument(
         "command",
-        choices=["demo", "experiment", "engine", "baselines", "selftest", "report"],
+        choices=["demo", "experiment", "engine", "baselines", "serve", "replay", "selftest", "report"],
         nargs="?",
         default="demo",
     )
@@ -134,6 +148,8 @@ def main() -> int:
         "experiment": cmd_experiment,
         "engine": cmd_engine,
         "baselines": cmd_baselines,
+        "serve": cmd_serve,
+        "replay": cmd_replay,
         "selftest": cmd_selftest,
         "report": cmd_report,
     }[args.command]()

@@ -34,6 +34,9 @@ from .incast import simulate_attention_incast
 from .metrics import Histogram, percentile, summary
 from .sglang import SGLangEngine
 from .transport import IsolationResult, simulate_noisy_neighbor
+from .replay import mixed_trace, session_trace
+from .scheduler import ServingScheduler
+from .serve import run_serving
 from .workload import ShareGPTWorkload, ZipfSampler
 
 
@@ -541,6 +544,33 @@ def isolation_summary(iso: dict[str, IsolationResult]) -> dict:
     }
 
 
+def scheduler_batch() -> dict:
+    from .appliance import ApplianceConfig, TensorKVAppliance
+    from .libtkv import TensorKVContext
+
+    eng = PagedEngine(
+        TensorKVContext(TensorKVAppliance(ApplianceConfig(n_pages=256, n_buckets=64, store_payloads=False)))
+    )
+    sch = ServingScheduler(eng)
+    prefix = list(range(16))
+    stats = sch.run_batch(
+        [
+            (1, prefix + [1, 2], prefix),
+            (2, prefix + [3, 4], prefix),
+            (3, list(range(20)), None),
+        ],
+        decode_steps=2,
+    )
+    return {
+        "submitted": stats.submitted,
+        "prefix_hits": stats.prefix_hits,
+        "decode_steps": stats.decode_steps,
+        "finished": stats.finished,
+        "mean_ttft_ms": (sum(stats.ttft_ms) / len(stats.ttft_ms)) if stats.ttft_ms else 0.0,
+        "mean_tbt_ms": (sum(stats.tbt_ms) / len(stats.tbt_ms)) if stats.tbt_ms else 0.0,
+    }
+
+
 def run_all() -> dict:
     occ = occupancy_sweep()
     iso = isolation_experiment()
@@ -562,6 +592,19 @@ def run_all() -> dict:
         "credit_vs_gemv": credit_vs_gemv_sweep(),
         "baselines": run_baseline_suite(),
         "eval_tables": eval_tables(),
+        "replay": mixed_trace(),
+        "session_trace": session_trace(),
+        "scheduler": scheduler_batch(),
+        "serving": run_serving(
+            n_sessions=20,
+            n_prefixes=5,
+            prefix_blocks=10,
+            unique_blocks=2,
+            max_batch=6,
+            decode_tokens=3,
+            n_pages=192,
+            seed=9,
+        ),
     }
 
 

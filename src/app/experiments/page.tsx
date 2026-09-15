@@ -353,6 +353,37 @@ export default function ExperimentsPage() {
             </CardContent>
           </Card>
 
+          {data.serving ? (
+            <Card className="lg:col-span-2 bg-card/80">
+              <CardHeader>
+                <CardTitle className="text-base">连续批 ShareGPT</CardTitle>
+                <CardDescription>
+                  调度器 PROBE → prefill → round-robin decode。前缀命中率、向量 overflow、LFRU 回收都是器件上跑出来的。
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="grid gap-2 text-sm sm:grid-cols-2 lg:grid-cols-4">
+                <div className="rounded-md bg-muted/50 p-3">
+                  <div className="text-xs text-muted-foreground">完成</div>
+                  <div className="font-mono">
+                    {data.serving.finished} / {data.serving.nSessions}
+                  </div>
+                </div>
+                <div className="rounded-md bg-muted/50 p-3">
+                  <div className="text-xs text-muted-foreground">前缀命中率</div>
+                  <div className="font-mono">{(data.serving.prefixHitRate * 100).toFixed(0)}%</div>
+                </div>
+                <div className="rounded-md bg-muted/50 p-3">
+                  <div className="text-xs text-muted-foreground">向量 overflow</div>
+                  <div className="font-mono">{data.serving.vectorOverflow}</div>
+                </div>
+                <div className="rounded-md bg-muted/50 p-3">
+                  <div className="text-xs text-muted-foreground">LFRU 回收</div>
+                  <div className="font-mono">{data.serving.reclaims}</div>
+                </div>
+              </CardContent>
+            </Card>
+          ) : null}
+
           <Card className="lg:col-span-2 bg-card/80">
             <CardHeader>
               <CardTitle className="text-base">占用吞吐保持率</CardTitle>

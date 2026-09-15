@@ -1,7 +1,10 @@
 import { TensorKVAppliance, TensorKVContext } from "./appliance";
 import { runBaselineSuite, ttftSim } from "./baselines";
 import { CuckooTable } from "./core";
+import { INLINE_IDS, decodeDescriptor, encodeRequest, getDescriptor } from "./descriptor";
 import { PagedEngine } from "./engine";
+import { ServingScheduler } from "./scheduler";
+import { runServing } from "./serve";
 import { SGLangEngine } from "./sglang";
 import {
   DEFAULT_CREDIT_GBPS,
@@ -349,7 +352,6 @@ export function getLatencyHistogram(nKeys = 256, nOps = 800, seed = 3) {
     nPages: nKeys + 64,
     storePayloads: false,
     fastSlowSplit: false,
-    seed: seed + 1,
   });
   for (let i = 0; i < nKeys; i++) {
     tkv.put(1, i);
@@ -510,6 +512,141 @@ export function sglangRadix() {
   };
 }
 
+export function mixedTrace(nContexts = 12, blocksPerCtx = 16, nOps = 240, seed = 11) {
+  const rng = new SplitMix64(BigInt(seed));
+  const tkv = new TensorKVAppliance({
+    nBuckets: 64,
+    nPages: nContexts * blocksPerCtx + 64,
+    storePayloads: false,
+    seed,
+  });
+  for (let ctx = 0; ctx < nContexts; ctx++) {
+    for (let bid = 0; bid < blocksPerCtx; bid++) tkv.put(ctx, bid);
+    tkv.publishPrefix(promptHash([...Array.from({ length: 8 }, (_, i) => i), ctx]), ctx, Array.from({ length: 8 }, (_, i) => i));
+  }
+  const sampler = new ZipfSampler(nContexts * blocksPerCtx, ZIPF_ALPHA, rng);
+  const share = new ShareGPTWorkload({ nPrefixes: 6, nSessions: 16, prefixBlocks: 8, uniqueBlocks: 2, seed: seed + 3 });
+  let gets = 0,
+    puts = 0,
+    probes = 0,
+    evicts = 0,
+    hits = 0,
+    misses = 0;
+  for (let i = 0; i < nOps; i++) {
+    const u = rng.nextFloat();
+    if (u < 0.55) {
+      const flat = sampler.sampleIndex();
+      const ctx = Math.floor(flat / blocksPerCtx);
+      const bid = flat % blocksPerCtx;
+      const g = tkv.get(ctx, [bid]);
+      gets++;
+      hits += g.hits.length;
+      misses += g.misses.length;
+    } else if (u < 0.7) {
+      tkv.put(rng.randint(0, nContexts - 1), blocksPerCtx + rng.randint(0, 3));
+      puts++;
+    } else if (u < 0.88) {
+      const sess = share.sessions[rng.randint(0, share.sessions.length - 1)];
+      tkv.probe(share.prefixHash(sess.prefixId));
+      probes++;
+    } else {
+      tkv.evict(rng.randint(0, nContexts - 1), "oldest", 1);
+      evicts++;
+    }
+  }
+  const st = tkv.stats();
+  return { ops: nOps, gets, puts, probes, evicts, getHits: hits, getMisses: misses, hashLoad: st.hashLoad, pagesUsed: st.pagesUsed, gatheredBytes: st.gatheredBytes };
+}
+
+export function sessionTrace(nSessions = 12, nPrefixes = 4, prefixBlocks = 12, uniqueBlocks = 2, seed = 4) {
+  const wl = new ShareGPTWorkload({ nPrefixes, nSessions, prefixBlocks, uniqueBlocks, seed });
+  const tkv = new TensorKVAppliance({
+    nBuckets: 64,
+    nPages: wl.workingSetBlocks + 64,
+    storePayloads: false,
+    seed,
+  });
+  const prefixCtx = new Map<number, number>();
+  let probes = 0,
+    hits = 0,
+    misses = 0,
+    gets = 0,
+    puts = 0,
+    evicts = 0,
+    overflowGets = 0,
+    gathered = 0;
+  for (const s of wl.sessions) {
+    const ph = wl.prefixHash(s.prefixId);
+    const pr = tkv.probe(ph);
+    probes++;
+    if (!pr.hit) {
+      const ctx = 1 + s.prefixId;
+      prefixCtx.set(s.prefixId, ctx);
+      for (let bid = 0; bid < s.prefixBlocks; bid++) {
+        tkv.put(ctx, bid);
+        puts++;
+      }
+      tkv.publishPrefix(ph, ctx, Array.from({ length: s.prefixBlocks }, (_, i) => i));
+      misses++;
+    } else {
+      hits++;
+      if (!prefixCtx.has(s.prefixId)) prefixCtx.set(s.prefixId, pr.contextId ?? 1 + s.prefixId);
+    }
+    const uctx = 1000 + s.sessionId;
+    for (let i = 0; i < s.uniqueBlocks; i++) {
+      tkv.put(uctx, i);
+      puts++;
+    }
+    const ids = Array.from({ length: s.prefixBlocks }, (_, i) => i);
+    const { header, overflow } = encodeRequest(getDescriptor(prefixCtx.get(s.prefixId)!, ids));
+    const walked = decodeDescriptor(header, overflow);
+    if (walked.nBlocks > INLINE_IDS) overflowGets++;
+    const g = tkv.get(prefixCtx.get(s.prefixId)!, walked.blockIds);
+    gets++;
+    gathered += g.gatheredBytes;
+    tkv.get(uctx, Array.from({ length: s.uniqueBlocks }, (_, i) => i));
+    gets++;
+    tkv.evict(uctx, "all");
+    evicts++;
+  }
+  return {
+    sessions: nSessions,
+    prefixBlocks,
+    probes,
+    prefixHits: hits,
+    prefixMisses: misses,
+    gets,
+    puts,
+    evicts,
+    overflowGets,
+    gatheredBytes: gathered,
+    prefixHitRate: nSessions ? hits / nSessions : 0,
+  };
+}
+
+export function schedulerBatch() {
+  const eng = new PagedEngine(
+    new TensorKVContext(new TensorKVAppliance({ nPages: 256, nBuckets: 64, storePayloads: false })),
+  );
+  const sch = new ServingScheduler(eng);
+  const prefix = Array.from({ length: 16 }, (_, i) => i);
+  const stats = sch.runBatch(
+    [
+      { reqId: 1, tokens: [...prefix, 1, 2], prefix },
+      { reqId: 2, tokens: [...prefix, 3, 4], prefix },
+      { reqId: 3, tokens: Array.from({ length: 20 }, (_, i) => i) },
+    ],
+    2,
+  );
+  return {
+    submitted: stats.submitted,
+    prefixHits: stats.prefixHits,
+    decodeSteps: stats.decodeSteps,
+    finished: stats.finished,
+    meanTtftMs: stats.ttftMs.length ? stats.ttftMs.reduce((a, b) => a + b, 0) / stats.ttftMs.length : 0,
+  };
+}
+
 export function runAllExperiments() {
   const iso = isolationExperiment();
   const ev = evictionSensitivity();
@@ -550,6 +687,10 @@ export function runAllExperiments() {
     fingerprint,
     creditVsGemv: creditVsGemvSweep(),
     sglang,
+    replay: mixedTrace(),
+    sessionTrace: sessionTrace(),
+    scheduler: schedulerBatch(),
+    serving: runServing({ nSessions: 12, nPrefixes: 4, prefixBlocks: 10, uniqueBlocks: 2, maxBatch: 4, decodeTokens: 2, nPages: 160, seed: 9 }),
     selfCheck: selfCheck({ prefix, monotonic, scatterGather, eviction: ev, drr, sglang, fingerprint }),
     baselines: runBaselineSuite(),
   };

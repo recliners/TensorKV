@@ -44,8 +44,7 @@ export default function BaselinesPage() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">可运行基线</h1>
           <p className="mt-2 max-w-3xl text-sm text-muted-foreground">
-            下面每一条路径都按<strong>命名部件</strong>组合：100 GbE / PCIe 串行化、1 GB decode 的 meta/sync、逻辑 GET 分解、Mixtral 足迹、DPU worker 扫、消融表。
-            不是 A100 墙钟实测。评估表是同一套组合的目标工作点。
+            GET 消融的 P99 来自浏览器内的 <code>TensorKVAppliance</code> 直方图。TTFT / TBT / 能量按链路串行化、句柄安装和器件功耗模型组合，不是 GPU 墙钟。
           </p>
         </div>
         <Button onClick={run}>运行基线套件</Button>
@@ -154,13 +153,14 @@ export default function BaselinesPage() {
             <Card className="bg-card/80">
               <CardHeader>
                 <CardTitle className="text-base">GET / 前缀消融</CardTitle>
+              <CardDescription>GET P99 在器件上测；前缀阶段用与引擎相同的句柄安装 / 预填充公式。</CardDescription>
               </CardHeader>
               <CardContent className="space-y-2 text-sm">
                 {data.ablation.map((r) => (
                   <div key={r.config} className="flex justify-between rounded-md bg-muted/50 px-3 py-2">
                     <span>{r.config}</span>
                     <span className="font-mono text-xs">
-                      GET P99 {r.getP99Us} µs · 前缀 {r.prefixMs} ms
+                      GET P99 {r.getP99Us.toFixed(2)} µs · 前缀 {r.prefixMs.toFixed(1)} ms
                     </span>
                   </div>
                 ))}

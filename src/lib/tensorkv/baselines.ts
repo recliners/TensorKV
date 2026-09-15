@@ -1,4 +1,5 @@
-import { TKV_NETWORK_NS, TKV_PCIE_DMA_NS, TKV_RMT_NS, serializeMs } from "./timing";
+import { TKV_NETWORK_NS, TKV_PCIE_DMA_NS, TKV_RMT_NS, handleInstallMs, prefillComputeMs, serializeMs } from "./timing";
+import { TensorKVAppliance } from "./appliance";
 import {
   BYTES_PER_TOKEN_LLAMA70B_INT4,
   BYTES_PER_TOKEN_MIXTRAL_FP8,
@@ -8,7 +9,10 @@ import {
   LINK_GBPS,
   PREFILL_COMPUTE_MS_AT_32K,
   PREFILL_TOKENS,
+  SplitMix64,
   TOKENS_PER_BLOCK,
+  ZIPF_ALPHA,
+  ZipfSampler,
 } from "./types";
 
 export { TKV_NETWORK_NS, TKV_RMT_NS, TKV_PCIE_DMA_NS, serializeMs } from "./timing";
@@ -36,7 +40,16 @@ export const TBT_1GB_MS: Record<string, Record<string, number>> = {
   tensorkv: { dma: 87, meta: 5, sync: 0, compute: 10, residual: 0 },
 };
 
-export const DPU_MPPS: Record<number, number> = { 1: 0.15, 2: 0.3, 4: 0.6, 8: 1.2, 16: 1.89, 32: 1.91 };
+export const WORKER_MPPS = 0.15;
+export const NIC_CAP_GBPS = 62;
+
+export function nicCapMpps(pktBytes = 4096, nicGbps = NIC_CAP_GBPS) {
+  return nicGbps * 1e9 / (pktBytes * 8) / 1e6;
+}
+
+export function dpuMpps(workers: number, pktBytes = 4096, nicGbps = NIC_CAP_GBPS) {
+  return Math.min(Math.max(1, workers) * WORKER_MPPS, nicCapMpps(pktBytes, nicGbps));
+}
 
 export const MOE_16WAY_MS: Record<string, Record<string, number>> = {
   host_soft: { router: 3.2, gemm: 18.1, meta: 42.5, dma: 21.0 },
@@ -141,16 +154,16 @@ export function bandwidthSweep(links = [25, 50, 75, 100]) {
   });
 }
 
-export function dpuMpps(workers: number) {
-  return DPU_MPPS[workers] ?? DPU_MPPS[32];
-}
-
 export function dpuGbps(workers: number, pktBytes = 4096) {
-  return dpuMpps(workers) * 1e6 * pktBytes * 8 / 1e9;
+  return dpuMpps(workers, pktBytes) * 1e6 * pktBytes * 8 / 1e9;
 }
 
 export function dpuWorkerSweep() {
-  return [1, 2, 4, 8, 16, 32].map((w) => ({ workers: w, mpps: dpuMpps(w), gbps: dpuGbps(w) }));
+  const cap = nicCapMpps();
+  return [1, 2, 4, 8, 16, 32].map((w) => {
+    const mpps = dpuMpps(w);
+    return { workers: w, mpps, gbps: dpuGbps(w), saturated: mpps >= cap - 0.02 };
+  });
 }
 
 export function mixtralSharing(topology: "64way" | "16way" | "noshare") {
@@ -183,9 +196,9 @@ export function mixtralSharing(topology: "64way" | "16way" | "noshare") {
     sfx = 512;
     overhead = 6.5 / 5.4;
     hostNoapc = null;
-    hostSoft = 85;
-    rdma = 58;
-    tkv = 47;
+    hostSoft = moeTbt("host_soft").total;
+    rdma = moeTbt("rdma_soft").total;
+    tkv = moeTbt("tkv_hard").total;
     gpuOom = true;
   } else {
     nPrefix = 32;
@@ -232,19 +245,74 @@ export function moeTbt(path: string) {
   return { ...parts, total };
 }
 
+const p99Cache = new Map<string, number>();
+
+function percentile(xs: number[], p: number) {
+  if (!xs.length) return 0;
+  const ys = [...xs].sort((a, b) => a - b);
+  const i = Math.min(ys.length - 1, Math.max(0, Math.round((p / 100) * (ys.length - 1))));
+  return ys[i];
+}
+
+export function measureGetP99Us(fastSlow: boolean, zeroCopy: boolean, nKeys = 128, nOps = 360, seed = 7) {
+  const key = `${fastSlow}:${zeroCopy}`;
+  const hit = p99Cache.get(key);
+  if (hit !== undefined) return hit;
+  const rng = new SplitMix64(BigInt(seed));
+  const tkv = new TensorKVAppliance({
+    nBuckets: 64,
+    nPages: nKeys + 32,
+    storePayloads: false,
+    seed,
+    fastSlowSplit: fastSlow,
+    zeroCopyDma: zeroCopy,
+  });
+  for (let i = 0; i < nKeys; i++) tkv.put(1, i);
+  const sampler = new ZipfSampler(nKeys, ZIPF_ALPHA, rng);
+  const samples: number[] = [];
+  for (let i = 0; i < nOps; i++) {
+    const u = rng.nextFloat();
+    let g;
+    if (u < 0.06) {
+      const vic = rng.randint(0, nKeys - 1);
+      tkv.beginEvictKey(1, vic);
+      g = tkv.get(1, [vic]);
+      tkv.completeEvictKey(1, vic);
+      tkv.put(1, vic);
+    } else if (u < 0.14) {
+      g = tkv.get(1, [nKeys + rng.randint(0, 20)]);
+    } else if (u < 0.32) {
+      const ids = Array.from({ length: 8 }, () => sampler.sampleIndex());
+      g = tkv.get(1, ids);
+    } else {
+      g = tkv.get(1, [sampler.sampleIndex()]);
+    }
+    samples.push(g.latencyNs);
+  }
+  const us = percentile(samples, 99) / 1e3;
+  p99Cache.set(key, us);
+  return us;
+}
+
 export function ablationGetP99Us(fastSlow: boolean, zeroCopy: boolean) {
-  if (!fastSlow) return 12.4;
-  if (!zeroCopy) return 8.5;
-  return 2.1;
+  return measureGetP99Us(fastSlow, zeroCopy);
+}
+
+export function ablationPrefixPhaseMs(dedup: boolean, tokens = PREFILL_TOKENS) {
+  return dedup ? handleInstallMs(tokens) : prefillComputeMs(tokens);
 }
 
 export function ablationTable() {
+  const full = ablationGetP99Us(true, true);
+  const nosplit = ablationGetP99Us(false, true);
+  const nozc = ablationGetP99Us(true, false);
+  const rdma = uncachedLogicalGet("rdma_uncached", 1).totalNs / 1e3;
   return [
-    { config: "完整 TensorKV", getP99Us: 2.1, prefixMs: 18 },
-    { config: "无前缀去重", getP99Us: 2.1, prefixMs: 1218 },
-    { config: "无快慢分流", getP99Us: 12.4, prefixMs: 18 },
-    { config: "无 zero-copy DMA", getP99Us: 8.5, prefixMs: 22 },
-    { config: "RDMA-Uncached", getP99Us: 14.1, prefixMs: 140 },
+    { config: "完整 TensorKV", getP99Us: Number(full.toFixed(3)), prefixMs: Number(ablationPrefixPhaseMs(true).toFixed(3)), source: "appliance" },
+    { config: "无前缀去重", getP99Us: Number(full.toFixed(3)), prefixMs: Number(ablationPrefixPhaseMs(false).toFixed(3)), source: "engine_timing" },
+    { config: "无快慢分流", getP99Us: Number(nosplit.toFixed(3)), prefixMs: Number(ablationPrefixPhaseMs(true).toFixed(3)), source: "appliance" },
+    { config: "无 zero-copy DMA", getP99Us: Number(nozc.toFixed(3)), prefixMs: Number(ablationPrefixPhaseMs(true).toFixed(3)), source: "appliance" },
+    { config: "RDMA-Uncached", getP99Us: Number(rdma.toFixed(3)), prefixMs: Number(ttftSim("rdma_opt").setupMs.toFixed(3)), source: "logical_get" },
   ];
 }
 

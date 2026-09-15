@@ -41,7 +41,10 @@ from tensorkv.experiments import (
     sglang_radix,
     sharegpt_eviction,
 )
+from tensorkv.replay import mixed_trace, session_trace
+from tensorkv.scheduler import Arrival, ServingScheduler
 from tensorkv.sglang import SGLangEngine
+from tensorkv.serve import run_serving
 from tensorkv.fairness import credit_vs_gemv_sweep, drr_fairness
 from tensorkv.hashutil import SplitMix64, fingerprint, pack_key, prompt_hash
 from tensorkv.hbm import BankedHBM
@@ -290,16 +293,23 @@ class TestDescriptorAndHBM(unittest.TestCase):
     def test_descriptor_is_64_bytes(self) -> None:
         raw = put_descriptor(1, 7, gpu_ptr=0x1000).encode()
         self.assertEqual(len(raw), DESCRIPTOR_BYTES)
-        got = get_descriptor(1, list(range(12)), credit_gbps=40.0).encode()
-        self.assertEqual(len(got), DESCRIPTOR_BYTES)
-        decoded = get_descriptor(1, list(range(12)), credit_gbps=40.0)
+        desc = get_descriptor(1, list(range(12)), credit_gbps=40.0)
+        header, overflow = desc.encode_request()
+        self.assertEqual(len(header), DESCRIPTOR_BYTES)
+        self.assertEqual(len(overflow), 16)
+        decoded = Descriptor.decode(header, overflow)
+        self.assertEqual(decoded.opcode, "GET")
         self.assertEqual(decoded.n_blocks, 12)
-        self.assertEqual(len(decoded.block_ids), 8)
-        roundtrip = Descriptor.decode(got)
-        self.assertEqual(roundtrip.opcode, "GET")
-        self.assertEqual(roundtrip.n_blocks, 12)
-        self.assertEqual(roundtrip.block_ids, list(range(8)))
-        self.assertAlmostEqual(roundtrip.credit_gbps, 40.0)
+        self.assertEqual(decoded.block_ids, list(range(12)))
+        self.assertAlmostEqual(decoded.credit_gbps, 40.0)
+
+    def test_get_async_walks_overflow_gather_list(self) -> None:
+        ctx = TensorKVContext(TensorKVAppliance(ApplianceConfig(block_size=16, n_pages=32, n_buckets=16)))
+        for i in range(12):
+            ctx.put_async(1, i, bytes([i]))
+        got = ctx.get_async(1, list(range(12)))
+        self.assertEqual(got.hits, list(range(12)))
+        self.assertEqual(len(got.payload), 12 * 16)
 
     def test_sram_slot_has_no_full_key(self) -> None:
         self.assertEqual(set(Slot.__dataclass_fields__), {"fingerprint", "phys"})
@@ -436,16 +446,28 @@ class TestBaselinesAndPaperTables(unittest.TestCase):
         self.assertAlmostEqual(by_link[100.0]["tensorkv_ms"], 102.0, delta=0.2)
 
     def test_dpu_sweep_saturates(self) -> None:
-        self.assertAlmostEqual(dpu_mpps(16), 1.89, places=2)
-        self.assertAlmostEqual(dpu_mpps(32), 1.91, places=2)
-        self.assertAlmostEqual(dpu_gbps(16), 1.89e6 * 4096 * 8 / 1e9, delta=0.5)
+        self.assertAlmostEqual(dpu_mpps(1), 0.15, places=2)
+        self.assertAlmostEqual(dpu_mpps(8), 1.20, places=2)
+        self.assertAlmostEqual(dpu_mpps(16), dpu_mpps(32), places=2)
         self.assertGreater(dpu_gbps(16), 60.0)
         self.assertLess(dpu_gbps(16), 65.0)
+        self.assertLess(dpu_mpps(4), dpu_mpps(16))
 
     def test_ablation_get_p99(self) -> None:
-        self.assertEqual(ablation_get_p99_us(True, True), 2.1)
-        self.assertEqual(ablation_get_p99_us(False, True), 12.4)
-        self.assertEqual(ablation_get_p99_us(True, False), 8.5)
+        full = ablation_get_p99_us(True, True)
+        nosplit = ablation_get_p99_us(False, True)
+        nozc = ablation_get_p99_us(True, False)
+        self.assertGreater(nosplit, full)
+        self.assertGreater(nozc, full)
+        self.assertGreater(nosplit, 8.0)
+        self.assertLess(full, nosplit * 0.85)
+
+    def test_ablation_prefix_phase_from_engine_timing(self) -> None:
+        from tensorkv.baselines import ablation_prefix_phase_ms
+        from tensorkv.timing import handle_install_ms, prefill_compute_ms
+
+        self.assertAlmostEqual(ablation_prefix_phase_ms(True), handle_install_ms(32_768), delta=0.05)
+        self.assertAlmostEqual(ablation_prefix_phase_ms(False), prefill_compute_ms(32_768), delta=1.0)
 
     def test_appliance_ablation_flags_change_latency(self) -> None:
         def one(fast: bool, zc: bool) -> int:
@@ -640,6 +662,98 @@ class TestZipfAndWorkloads(unittest.TestCase):
         self.assertGreater(iso["fifo"].interference_p99, iso["qos"].interference_p99)
         self.assertGreater(iso["qos"].interference_p99, iso["pacing"].interference_p99)
         self.assertGreater(iso["pacing"].interference_p99, iso["both"].interference_p99)
+
+
+class TestSchedulerReplayAndDpuModel(unittest.TestCase):
+    def test_serving_scheduler_reuses_prefix(self) -> None:
+        eng = PagedEngine(
+            TensorKVContext(TensorKVAppliance(ApplianceConfig(n_pages=128, n_buckets=32, store_payloads=False)))
+        )
+        sch = ServingScheduler(eng)
+        prefix = list(range(12))
+        stats = sch.run_batch(
+            [
+                (1, prefix + [1], prefix),
+                (2, prefix + [2], prefix),
+            ],
+            decode_steps=2,
+        )
+        self.assertEqual(stats.submitted, 2)
+        self.assertGreaterEqual(stats.prefix_hits, 1)
+        self.assertEqual(stats.finished, 2)
+        self.assertGreater(stats.decode_steps, 0)
+
+    def test_mixed_trace_covers_four_opcodes(self) -> None:
+        r = mixed_trace(n_contexts=8, blocks_per_ctx=8, n_ops=120, seed=2)
+        self.assertEqual(r["ops"], 120)
+        self.assertGreater(r["gets"], 0)
+        self.assertGreater(r["probes"], 0)
+        self.assertGreaterEqual(r["puts"] + r["evicts"], 1)
+
+    def test_dpu_linear_then_nic_cap(self) -> None:
+        self.assertAlmostEqual(dpu_mpps(1), 0.15, places=2)
+        self.assertLess(dpu_mpps(4), dpu_mpps(16))
+        self.assertAlmostEqual(dpu_mpps(16), dpu_mpps(64), places=2)
+
+    def test_session_trace_uses_gather_overflow(self) -> None:
+        r = session_trace(n_sessions=8, n_prefixes=3, prefix_blocks=12, unique_blocks=2, seed=4)
+        self.assertEqual(r["sessions"], 8)
+        self.assertGreater(r["overflow_gets"], 0)
+        self.assertGreater(r["prefix_hits"], 0)
+        self.assertGreater(r["gets"], 0)
+        self.assertEqual(r["prefix_blocks"], 12)
+
+    def test_continuous_serving_reuses_sharegpt_prefix(self) -> None:
+        r = run_serving(
+            n_sessions=12,
+            n_prefixes=3,
+            prefix_blocks=10,
+            unique_blocks=2,
+            max_batch=4,
+            decode_tokens=3,
+            n_pages=192,
+            n_buckets=64,
+            seed=5,
+        )
+        self.assertTrue(r["complete"])
+        self.assertEqual(r["finished"], 12)
+        self.assertGreater(r["prefix_hits"], 0)
+        self.assertGreater(r["vector_overflow"], 0)
+        self.assertGreater(r["overflow_bytes"], 0)
+        self.assertGreater(r["device"]["get_ops"], 0)
+        self.assertGreater(r["get_latency_ns"]["p99"], r["get_latency_ns"]["p50"])
+
+    def test_serving_reclaims_under_page_pressure(self) -> None:
+        r = run_serving(
+            n_sessions=10,
+            n_prefixes=8,
+            prefix_blocks=8,
+            unique_blocks=3,
+            max_batch=4,
+            decode_tokens=2,
+            n_pages=16,
+            n_buckets=32,
+            seed=3,
+        )
+        self.assertGreater(r["reclaims"], 0)
+        self.assertGreaterEqual(r["finished"], 1)
+
+    def test_scheduler_arrivals_prefill_before_decode(self) -> None:
+        eng = PagedEngine(
+            TensorKVContext(TensorKVAppliance(ApplianceConfig(n_pages=64, n_buckets=16, store_payloads=False)))
+        )
+        sch = ServingScheduler(eng, max_batch=2)
+        prefix = list(range(8))
+        stats = sch.run_arrivals(
+            [
+                Arrival(1, prefix + [1], prefix, max_new=2, arrive_tick=0),
+                Arrival(2, prefix + [2], prefix, max_new=2, arrive_tick=0),
+            ]
+        )
+        self.assertEqual(stats.submitted, 2)
+        self.assertGreaterEqual(stats.prefix_hits, 1)
+        self.assertEqual(stats.finished, 2)
+        self.assertGreater(stats.peak_batch, 0)
 
 
 def run_unittest() -> int:

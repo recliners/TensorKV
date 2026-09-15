@@ -10,6 +10,7 @@ const NAV = [
   { href: "/playground", label: "四原语" },
   { href: "/architecture", label: "双路径" },
   { href: "/engine", label: "推理引擎" },
+  { href: "/serve", label: "连续批" },
   { href: "/isolation", label: "流控隔离" },
   { href: "/experiments", label: "实验" },
   { href: "/baselines", label: "基线" },

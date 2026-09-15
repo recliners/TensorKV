@@ -4,6 +4,7 @@ export { DESCRIPTOR_BYTES };
 
 const OP: Record<string, number> = { PUT: 1, GET: 2, PROBE: 3, EVICT: 4 };
 const OP_NAME = ["", "PUT", "GET", "PROBE", "EVICT"];
+export const INLINE_IDS = 8;
 
 export type Descriptor = {
   opcode: string;
@@ -17,12 +18,34 @@ export type Descriptor = {
   blockIds: number[];
 };
 
+export function packGatherList(blockIds: number[]): Uint8Array {
+  const extra = blockIds.slice(INLINE_IDS);
+  if (!extra.length) return new Uint8Array(0);
+  const buf = new ArrayBuffer(extra.length * 4);
+  const view = new DataView(buf);
+  extra.forEach((id, i) => view.setUint32(i * 4, id >>> 0, true));
+  return new Uint8Array(buf);
+}
+
+export function unpackGatherList(inline: number[], nBlocks: number, overflow: Uint8Array): number[] {
+  const n = Math.max(0, nBlocks);
+  const head = inline.slice(0, Math.min(INLINE_IDS, n));
+  if (n <= INLINE_IDS) return head;
+  const need = n - INLINE_IDS;
+  if (overflow.length < need * 4) throw new Error("gather overflow too short");
+  const extra: number[] = [];
+  const view = new DataView(overflow.buffer, overflow.byteOffset, overflow.byteLength);
+  for (let i = 0; i < need; i++) extra.push(view.getUint32(i * 4, true));
+  return head.concat(extra);
+}
+
 export function encodeDescriptor(d: Descriptor): Uint8Array {
   const buf = new ArrayBuffer(DESCRIPTOR_BYTES);
   const view = new DataView(buf);
   view.setUint8(0, OP[d.opcode] ?? 0);
   view.setUint8(1, d.creditGbps ? 1 : 0);
-  view.setUint16(2, d.nBlocks & 0xffff, true);
+  const n = d.nBlocks || d.blockIds.length;
+  view.setUint16(2, n & 0xffff, true);
   view.setUint32(4, d.contextId >>> 0, true);
   view.setUint16(8, Math.round(d.creditGbps * 100) & 0xffff, true);
   view.setUint8(10, d.policy & 0xff);
@@ -30,9 +53,13 @@ export function encodeDescriptor(d: Descriptor): Uint8Array {
   view.setUint32(12, d.seqId >>> 0, true);
   view.setBigUint64(16, d.gpuPtr, true);
   view.setBigUint64(24, d.promptHash, true);
-  const ids = [...d.blockIds, 0, 0, 0, 0, 0, 0, 0, 0].slice(0, 8);
-  for (let i = 0; i < 8; i++) view.setUint32(32 + i * 4, ids[i] >>> 0, true);
+  const ids = [...d.blockIds, 0, 0, 0, 0, 0, 0, 0, 0].slice(0, INLINE_IDS);
+  for (let i = 0; i < INLINE_IDS; i++) view.setUint32(32 + i * 4, ids[i] >>> 0, true);
   return new Uint8Array(buf);
+}
+
+export function encodeRequest(d: Descriptor): { header: Uint8Array; overflow: Uint8Array } {
+  return { header: encodeDescriptor(d), overflow: packGatherList(d.blockIds) };
 }
 
 export function putDescriptor(contextId: number, seqId: number, gpuPtr = 0n): Descriptor {
@@ -59,7 +86,7 @@ export function getDescriptor(contextId: number, blockIds: number[], creditGbps 
     seqId: 0,
     gpuPtr,
     promptHash: 0n,
-    blockIds: blockIds.slice(0, 8),
+    blockIds: [...blockIds],
   };
 }
 
@@ -91,7 +118,7 @@ export function evictDescriptor(contextId: number, policy = 0): Descriptor {
   };
 }
 
-export function decodeDescriptor(raw: Uint8Array): Descriptor {
+export function decodeDescriptor(raw: Uint8Array, overflow: Uint8Array = new Uint8Array()): Descriptor {
   if (raw.length !== DESCRIPTOR_BYTES) throw new Error(`descriptor must be ${DESCRIPTOR_BYTES} bytes`);
   const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
   const op = view.getUint8(0);
@@ -103,9 +130,8 @@ export function decodeDescriptor(raw: Uint8Array): Descriptor {
   const seqId = view.getUint32(12, true);
   const gpuPtr = view.getBigUint64(16, true);
   const promptHash = view.getBigUint64(24, true);
-  const blockIds: number[] = [];
-  const n = Math.max(0, Math.min(8, nBlocks));
-  for (let i = 0; i < n; i++) blockIds.push(view.getUint32(32 + i * 4, true));
+  const inline: number[] = [];
+  for (let i = 0; i < INLINE_IDS; i++) inline.push(view.getUint32(32 + i * 4, true));
   return {
     opcode: OP_NAME[op] ?? "PUT",
     contextId,
@@ -115,6 +141,6 @@ export function decodeDescriptor(raw: Uint8Array): Descriptor {
     seqId,
     gpuPtr,
     promptHash,
-    blockIds,
+    blockIds: unpackGatherList(inline, nBlocks, overflow),
   };
 }

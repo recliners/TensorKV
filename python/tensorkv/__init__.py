@@ -10,6 +10,7 @@ from .constants import (
 from .engine import PagedEngine
 from .hashutil import prompt_hash
 from .libtkv import TensorKVContext, open_device
+from .scheduler import ServingScheduler
 from .sglang import SGLangEngine
 
 __all__ = [
@@ -18,6 +19,7 @@ __all__ = [
     "TensorKVContext",
     "PagedEngine",
     "SGLangEngine",
+    "ServingScheduler",
     "open_device",
     "prompt_hash",
     "run_baseline_suite",

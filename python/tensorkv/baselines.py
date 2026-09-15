@@ -26,7 +26,9 @@ from .constants import (
     PREFILL_TOKENS,
     TOKENS_PER_BLOCK,
 )
-from .timing import serialize_ms
+from .dpu import dpu_gbps, dpu_mpps, dpu_worker_sweep
+from .measure import cached_get_p99_us
+from .timing import handle_install_ms, prefill_compute_ms, serialize_ms
 
 # Paper Figure micro_perf / latency_breakdown (nanoseconds).
 TKV_NETWORK_NS = 800
@@ -57,9 +59,7 @@ TBT_1GB_MS: dict[str, dict[str, float]] = {
     "tensorkv": {"dma": 87, "meta": 5, "sync": 0, "compute": 10, "residual": 0},
 }
 
-# DPU-DPA 4 KB Mpps vs worker count (paper Figure dpa_sweep).
-DPU_MPPS = {1: 0.15, 2: 0.30, 4: 0.60, 8: 1.20, 16: 1.89, 32: 1.91}
-DPU_SATURATION_GBPS = 62.0
+# DPA one-thread rate and NIC cap; sweep is min(workers × 0.15 Mpps, cap).
 
 REF_FETCH_BYTES = 1_000_000_000
 
@@ -279,36 +279,6 @@ def bandwidth_sweep(links: tuple[float, ...] = (25.0, 50.0, 75.0, 100.0)) -> lis
     return rows
 
 
-def dpu_mpps(workers: int) -> float:
-    if workers in DPU_MPPS:
-        return DPU_MPPS[workers]
-    keys = sorted(DPU_MPPS)
-    if workers <= keys[0]:
-        return DPU_MPPS[keys[0]]
-    if workers >= keys[-1]:
-        return DPU_MPPS[keys[-1]]
-    lo = max(k for k in keys if k <= workers)
-    hi = min(k for k in keys if k >= workers)
-    t = (workers - lo) / (hi - lo)
-    return DPU_MPPS[lo] * (1 - t) + DPU_MPPS[hi] * t
-
-
-def dpu_gbps(workers: int, pkt_bytes: int = 4096) -> float:
-    return dpu_mpps(workers) * 1e6 * pkt_bytes * 8 / 1e9
-
-
-def dpu_worker_sweep() -> list[dict]:
-    return [
-        {
-            "workers": w,
-            "mpps": dpu_mpps(w),
-            "gbps": dpu_gbps(w),
-            "saturated": dpu_gbps(w) >= DPU_SATURATION_GBPS - 1.0,
-        }
-        for w in (1, 2, 4, 8, 16, 32)
-    ]
-
-
 @dataclass
 class MoEFootprint:
     topology: str
@@ -340,7 +310,10 @@ def mixtral_sharing(topology: str) -> MoEFootprint:
     elif topology == "16way":
         n_prefix, n_req, pfx, sfx = 2, 32, 32_768, 512
         overhead = 6.5 / 5.4
-        host_noapc, host_soft, rdma, tkv = None, 85.0, 58.0, 47.0
+        host_noapc = None
+        host_soft = moe_tbt_breakdown("host_soft")["total"]
+        rdma = moe_tbt_breakdown("rdma_soft")["total"]
+        tkv = moe_tbt_breakdown("tkv_hard")["total"]
         gpu_oom = True
     elif topology == "noshare":
         n_prefix, n_req, pfx, sfx = 32, 32, 16_384, 512
@@ -403,44 +376,52 @@ def try_remote_alloc(need_bytes: int, capacity: int = REMOTE_TIER_BYTES) -> tupl
 
 
 def ablation_get_p99_us(fast_slow_split: bool, zero_copy_dma: bool) -> float:
-    """Paper Table ablation: Full 2.1; w/o fast-slow 12.4; w/o zero-copy 8.5."""
-    if not fast_slow_split:
-        return 12.4
-    if not zero_copy_dma:
-        return 8.5
-    return 2.1
+    """P99 GET latency in microseconds, measured on TensorKVAppliance."""
+    return cached_get_p99_us(fast_slow_split, zero_copy_dma)
 
 
-def ablation_prefix_phase_ms(prefix_dedup: bool) -> float:
-    return 18.0 if prefix_dedup else 1218.0
+def ablation_prefix_phase_ms(prefix_dedup: bool, tokens: int = PREFILL_TOKENS) -> float:
+    """Prefix-phase time from the same handle-install / prefill model the engine uses."""
+    if prefix_dedup:
+        return handle_install_ms(tokens)
+    return prefill_compute_ms(tokens)
 
 
 def ablation_table() -> list[dict]:
+    full = ablation_get_p99_us(True, True)
+    nosplit = ablation_get_p99_us(False, True)
+    nozc = ablation_get_p99_us(True, False)
+    rdma = uncached_logical_get("rdma_uncached", 1).total_ns / 1e3
     return [
         {
             "config": "full",
-            "get_p99_us": ablation_get_p99_us(True, True),
-            "prefix_phase_ms": ablation_prefix_phase_ms(True),
+            "get_p99_us": round(full, 3),
+            "prefix_phase_ms": round(ablation_prefix_phase_ms(True), 3),
+            "source": "appliance",
         },
         {
             "config": "no_prefix_dedup",
-            "get_p99_us": ablation_get_p99_us(True, True),
-            "prefix_phase_ms": ablation_prefix_phase_ms(False),
+            "get_p99_us": round(full, 3),
+            "prefix_phase_ms": round(ablation_prefix_phase_ms(False), 3),
+            "source": "engine_timing",
         },
         {
             "config": "no_fast_slow",
-            "get_p99_us": ablation_get_p99_us(False, True),
-            "prefix_phase_ms": ablation_prefix_phase_ms(True),
+            "get_p99_us": round(nosplit, 3),
+            "prefix_phase_ms": round(ablation_prefix_phase_ms(True), 3),
+            "source": "appliance",
         },
         {
             "config": "no_zero_copy",
-            "get_p99_us": ablation_get_p99_us(True, False),
-            "prefix_phase_ms": 22.0,
+            "get_p99_us": round(nozc, 3),
+            "prefix_phase_ms": round(ablation_prefix_phase_ms(True), 3),
+            "source": "appliance",
         },
         {
             "config": "rdma_uncached",
-            "get_p99_us": 14.1,
-            "prefix_phase_ms": 140.0,
+            "get_p99_us": round(rdma, 3),
+            "prefix_phase_ms": round(ttft_sim("rdma_opt").setup_ms, 3),
+            "source": "logical_get",
         },
     ]
 

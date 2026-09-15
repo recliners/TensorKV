@@ -12,7 +12,7 @@ from typing import Any
 
 from .appliance import GetResult, ProbeResult, PutResult, TensorKVAppliance
 from .baselines import TKV_NETWORK_NS, TKV_PCIE_DMA_NS
-from .descriptor import DESCRIPTOR_BYTES, evict_descriptor, get_descriptor, probe_descriptor, put_descriptor
+from .descriptor import DESCRIPTOR_BYTES, Descriptor, evict_descriptor, get_descriptor, probe_descriptor, put_descriptor
 from .world import World
 
 
@@ -39,6 +39,7 @@ class TensorKVContext:
         self._ticket = 0
         self.sq_depth = 0
         self.descriptors_posted = 0
+        self.overflow_bytes = 0
 
     def register_gpu_memory(self, gpu_ptr: int, size: int) -> None:
         self.registered.append((gpu_ptr, size))
@@ -91,13 +92,14 @@ class TensorKVContext:
 
     def get_async(self, context_id: int, block_ids: list[int], credit_gbps: float | None = 40.0, gpu_ptr: int = 0) -> GetResult:
         desc = get_descriptor(context_id, block_ids, credit_gbps=credit_gbps or 0.0, gpu_ptr=gpu_ptr)
-        raw = desc.encode()
+        raw, overflow = desc.encode_request()
+        self.overflow_bytes += len(overflow)
         result: GetResult | None = None
 
         def run() -> GetResult:
             nonlocal result
-            # 64B descriptor carries the first 8 IDs; the full vector is the semantic GET.
-            result = self.device.get(context_id, block_ids, credit_gbps=credit_gbps)
+            walked = Descriptor.decode(raw, overflow)
+            result = self.device.get(context_id, walked.block_ids, credit_gbps=credit_gbps)
             return result
 
         self._post("GET", raw, run)

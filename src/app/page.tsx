@@ -42,6 +42,7 @@ const MAP = [
   { section: "Crossbar commit", code: "AtomicCrossbar 1 周期 bank lock" },
   { section: "64B 描述符", code: "descriptor.py / libtkv + World 时钟" },
   { section: "PagedAttention / SGLang", code: "engine.py / sglang.py" },
+  { section: "连续批调度 / ShareGPT", code: "scheduler.py / serve.py / replay.py" },
   { section: "Mixtral / 基线", code: "baselines.py 可组合 TTFT/TBT/OOM" },
   { section: "16 源 incast", code: "incast.py 128KB fan-in" },
 ];
@@ -64,8 +65,11 @@ export default function HomePage() {
             <Link href="/playground" className={cn(buttonVariants())}>
               打开四原语工作台 <ArrowRight className="size-4" />
             </Link>
-            <Link href="/experiments" className={cn(buttonVariants({ variant: "outline" }))}>
-              跑测试床实验
+            <Link href="/engine" className={cn(buttonVariants({ variant: "outline" }))}>
+              推理引擎
+            </Link>
+            <Link href="/serve" className={cn(buttonVariants({ variant: "outline" }))}>
+              连续批服务
             </Link>
             <Link href="/baselines" className={cn(buttonVariants({ variant: "outline" }))}>
               可运行基线
@@ -80,7 +84,7 @@ export default function HomePage() {
           <CardContent className="space-y-3 text-sm leading-6">
             <p>
               <span className="font-medium text-primary">能做：</span>
-              四原语、双路径 Cuckoo、Bloom 前缀、FIFO 分配器、Scoreboard 一致性、前缀感知 LFRU、基于信用的整形、VOQ + 严格优先级 + DRR。
+              四原语、双路径 Cuckoo、Bloom 前缀、FIFO 分配器、Scoreboard 一致性、前缀感知 LFRU、基于信用的整形、VOQ + 严格优先级 + DRR、连续批调度与 ShareGPT 回放。
             </p>
             <p>
               <span className="font-medium text-accent">不能做：</span>

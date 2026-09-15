@@ -2,7 +2,7 @@
 
 面向长上下文 LLM 推理的语义网内 KV 缓存。计算节点提交语义命令，存储器件完成分配、哈希查找、Scatter-Gather、前缀探测与安全回收。
 
-本仓库包含 TensorKV 的软件实现（Python 器件/调度模型与浏览器演示）和 [`hardware/`](hardware/README.md) 中的 FPGA / 交换机数据通路与主机实验程序。
+本仓库的**软件实现是完整可运行的**：Python 器件/调度模型，以及浏览器内同一套 TypeScript 实现。四原语、Cuckoo、PROBE/EVICT、LFRU、隔离与 GET 延迟都在器件上执行。[`hardware/`](hardware/README.md) 是 FPGA / 交换机实验通路，与软件独立。
 
 ## 实现范围
 
@@ -32,6 +32,8 @@
 | 512b 影子行 + 1 周期 bank lock | `crossbar.py` | `crossbar.ts` |
 | 64B 描述符 / 异步 CQ | `descriptor.py` `libtkv.py` | `descriptor.ts` `TensorKVContext` |
 | PagedAttention + SGLang radix 叶 | `engine.py` `sglang.py` | `engine.ts` `sglang.ts` `/engine` |
+| 连续批调度 / ShareGPT 回放 | `scheduler.py` `serve.py` `replay.py` | `scheduler.ts` `serve.ts` `/serve` |
+| 器件实测 GET P99 | `measure.py` | `measureGetP99Us` |
 | 离散事件时钟与预约回收 | `world.py` `schedule_evict` | `world.ts` `scheduleEvict` |
 | Host/RDMA/RPC/DPU/Mixtral/消融 | `baselines.py` | `baselines.ts` `/baselines` |
 
@@ -52,6 +54,8 @@ PYTHONPATH=python python3 -m tensorkv demo
 PYTHONPATH=python python3 -m tensorkv report
 PYTHONPATH=python python3 -m tensorkv experiment
 PYTHONPATH=python python3 -m tensorkv engine
+PYTHONPATH=python python3 -m tensorkv serve
+PYTHONPATH=python python3 -m tensorkv replay
 PYTHONPATH=python python3 -m tensorkv baselines
 ```
 
@@ -61,6 +65,7 @@ PYTHONPATH=python python3 -m tensorkv baselines
 - `/playground` 四原语工作台（64B 描述符、World 调度 GET×EVICT）
 - `/architecture` 双路径与一致性互锁
 - `/engine` 共享前缀的推理控制流（PagedEngine + SGLang radix，finish 释放 refcount）
+- `/serve` 连续批服务：ShareGPT 到达、PROBE/prefill/decode、LFRU 回收、向量 GET overflow
 - `/isolation` 吵闹邻居：FIFO / 仅 QoS / 仅整形 / 两者
 - `/experiments` 占用、LFRU、ShareGPT、GET 直方图、指纹/victim、credit vs GEMV、SGLang、隔离四档、浏览器自检
 - `/baselines` TTFT/TBT、DPU、带宽、MoE、消融、能量、incast、异步 PUT、NVSHMEM
@@ -74,7 +79,7 @@ PYTHONPATH=python python3 -m tensorkv baselines
 - **ShareGPT 多前缀**：60% 容量前缀存活 LRU 17% / LFRU 100%（差 83 个百分点）。
 - **隔离** 干扰段 P99：FIFO 200 ms（RTO） / QoS 40 ms（写引擎 HOL） / 整形 15 ms（GEMV 片） / 两者 3.5 ms（credit gather）。
 - **32K 前缀 TTFT**（100GbE fetch）：miss = compute 1200 ms + fetch 215 ms ≈ 1415 ms；hit = setup 18 ms + fetch 215 ms + compute 15 ms ≈ 248 ms；缺口 1167 ms 来自重算 vs 句柄安装，两边 fetch 一样。
-- **GET 延迟**：快路径 P50 ≈ 3.0 µs，混合 gather/miss/hazard 后 P99 ≈ 6.3 µs；关掉快慢分流后 P50 ≈ 13.2 µs。
+- **GET 延迟**：快慢分流与 zero-copy 的 P99 由 `TensorKVAppliance` 直方图测出（`python -m tensorkv` 消融表）。混合 hit/gather/miss/hazard 的分布见 `/experiments`。
 - **DRR**：四租户 Jain = 1.0；incast 爆破丢包、40 Gbps credit 为 0；credit 超过 GEMV 时 GPU RX 开始积压。
 
 ## 设计要点
@@ -84,4 +89,4 @@ PYTHONPATH=python python3 -m tensorkv baselines
 - **PROBE**：Bloom 否定直接 Miss；命中只返回句柄并 `ref++`。
 - **EVICT**：先 `hazard=1`，再清映射、还页，最后清危险位。
 - **Mixtral**：64-way 去重后约 5.2 GB 能进 8 GiB；无共享远端 >9.7 GB 时远端分配失败。
-- **消融**：完整 GET P99 2.1 µs；无快慢分流 12.4 µs；无 zero-copy 8.5 µs。关掉前缀去重后，prefix phase 从 18 ms 变成 1218 ms 重算。
+- **消融**：GET P99 在器件上测（关快慢分流或 zero-copy 会变长）。前缀阶段用句柄安装 vs 整段预填充（32K 时约 18 ms vs 1200 ms）。

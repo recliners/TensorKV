@@ -120,6 +120,7 @@ class TensorKVAppliance:
         self.gathered_bytes = 0
         self.inflight_evict: set[int] = set()
         self.credit_gbps = 40.0
+        self.get_latencies: list[int] = []
 
     def _payload_bytes(self, context_id: int, seq_id: int, data: bytes | None) -> bytes:
         if not self.cfg.store_payloads:
@@ -278,6 +279,9 @@ class TensorKVAppliance:
         self.gathered_bytes += len(payload)
         latency += FAST_PATH_HBM_HIT_NS if hits else FAST_PATH_SRAM_HIT_NS
         events.append(TraceEvent("GET", "fast", "egress", f"hits={len(hits)} misses={len(misses)} recirc={recirc}", latency))
+        self.get_latencies.append(latency)
+        if len(self.get_latencies) > 4096:
+            del self.get_latencies[:2048]
         return GetResult(
             ok=len(misses) == 0 and len(hits) > 0,
             payload=payload,

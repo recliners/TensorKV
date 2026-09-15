@@ -6,7 +6,7 @@ import {
   Scoreboard,
 } from "./core";
 import { AtomicCrossbar } from "./crossbar";
-import { encodeDescriptor, evictDescriptor, getDescriptor, probeDescriptor, putDescriptor } from "./descriptor";
+import { decodeDescriptor, encodeRequest, evictDescriptor, getDescriptor, probeDescriptor, putDescriptor } from "./descriptor";
 import { BankedHBM } from "./hbm";
 import { CreditShaper, VirtualOutputQueues } from "./transport";
 import { TKV_NETWORK_NS, TKV_PCIE_DMA_NS } from "./timing";
@@ -89,6 +89,7 @@ export class TensorKVAppliance {
   evictOps = 0;
   gatheredBytes = 0;
   creditGbps = 40;
+  getLatencies: number[] = [];
 
   constructor(cfg: ApplianceConfig = {}) {
     this.cfg = {
@@ -262,6 +263,8 @@ export class TensorKVAppliance {
       detail: `hits=${hits.length} misses=${misses.length} recirc=${recirc}`,
       latency_ns: latency,
     });
+    this.getLatencies.push(latency);
+    if (this.getLatencies.length > 4096) this.getLatencies.splice(0, 2048);
     return {
       ok: misses.length === 0 && hits.length > 0,
       payload,
@@ -510,6 +513,7 @@ export class TensorKVContext {
   world: World;
   cq: { op: string; ok: boolean; detail: string; descriptor: Uint8Array; ticket: number }[] = [];
   descriptorsPosted = 0;
+  overflowBytes = 0;
   submitted = 0;
   sqDepth = 0;
   registered: [bigint, number][] = [];
@@ -540,7 +544,7 @@ export class TensorKVContext {
   }
 
   putAsync(ctx: number, seq: number, data?: Uint8Array, prefixHash?: bigint, gpuPtr = 0n) {
-    const desc = encodeDescriptor(putDescriptor(ctx, seq, gpuPtr));
+    const desc = encodeRequest(putDescriptor(ctx, seq, gpuPtr)).header;
     let result: ReturnType<TensorKVAppliance["put"]> | null = null;
     this.post("PUT", desc, () => {
       result = this.device.put(ctx, seq, data, prefixHash);
@@ -550,17 +554,19 @@ export class TensorKVContext {
   }
 
   getAsync(ctx: number, ids: number[], credit = 40, gpuPtr = 0n) {
-    const desc = encodeDescriptor(getDescriptor(ctx, ids, credit, gpuPtr));
+    const { header, overflow } = encodeRequest(getDescriptor(ctx, ids, credit, gpuPtr));
+    this.overflowBytes += overflow.length;
     let result: ReturnType<TensorKVAppliance["get"]> | null = null;
-    this.post("GET", desc, () => {
-      result = this.device.get(ctx, ids, credit);
+    this.post("GET", header, () => {
+      const walked = decodeDescriptor(header, overflow);
+      result = this.device.get(ctx, walked.blockIds, credit);
       return { ok: result.ok, detail: `hits=${result.hits.length} misses=${result.misses.length}` };
     });
     return result!;
   }
 
   probe(hash: bigint) {
-    const desc = encodeDescriptor(probeDescriptor(hash));
+    const desc = encodeRequest(probeDescriptor(hash)).header;
     let result: ReturnType<TensorKVAppliance["probe"]> | null = null;
     this.post("PROBE", desc, () => {
       result = this.device.probe(hash);
@@ -570,7 +576,7 @@ export class TensorKVContext {
   }
 
   evict(ctx: number, policy: "lru" | "lfru" | "all" | "oldest" = "lru", k?: number) {
-    const desc = encodeDescriptor(evictDescriptor(ctx));
+    const desc = encodeRequest(evictDescriptor(ctx)).header;
     let result: ReturnType<TensorKVAppliance["evict"]> | null = null;
     this.post("EVICT", desc, () => {
       result = this.device.evict(ctx, policy, k);
