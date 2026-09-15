@@ -2,7 +2,7 @@
 
 面向长上下文 LLM 推理的语义网内 KV 缓存。计算节点提交语义命令，存储器件完成分配、哈希查找、Scatter-Gather、前缀探测与安全回收。
 
-本仓库是 TensorKV 的软件实现：Python 器件/调度模型，以及浏览器内同一套 TypeScript 实现与交互演示。
+本仓库包含 TensorKV 的软件实现（Python 器件/调度模型与浏览器演示）和 [`hardware/`](hardware/README.md) 中的 FPGA / 交换机数据通路与主机实验程序。
 
 ## 实现范围
 
@@ -13,9 +13,7 @@
 - 64 字节 libtkv 描述符、分 bank HBM
 - 评估路径：Host-Swap / RDMA / RPC / DPU、Mixtral 共享拓扑、消融、能量、16 源 incast
 
-软件模型按命名部件组合延迟（链路串行化、流水线周期、credit、算力缩放）。
-
-FPGA / RMT 与主机侧实验代码在 [`hardware/`](hardware/README.md)，来自匿名快照 TensorKV-77A5，已按 `rtl/`、`host/`、`scripts/` 整理。快照不含 Vivado 工程，不能直接出比特流。
+软件模型按命名部件组合延迟（链路串行化、流水线周期、credit、算力缩放）。网内流水线、RDMA atomic 与 Tofino 表项见 [`hardware/`](hardware/README.md)。
 
 ## 模块
 

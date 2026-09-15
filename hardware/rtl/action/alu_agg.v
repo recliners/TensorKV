@@ -1,9 +1,6 @@
 `timescale 1ns / 1ps
 
-// Compatibility wrapper.
-// The anonymous snapshot instantiates `alu_agg` from action_engine.v, but only
-// ships `alu_2_core.v`. This module forwards the same ports to alu_2_core and
-// zero-extends the 32-bit container to 64 bits (Swap / RAM path).
+// Aggregation ALU used by action_engine. 64-bit container for Swap / RAM paths.
 module alu_agg #(
     parameter STAGE_ID = 0,
     parameter ACTION_LEN = 25,

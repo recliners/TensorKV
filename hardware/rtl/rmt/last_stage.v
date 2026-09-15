@@ -12,7 +12,7 @@ module last_stage #(
     parameter C_S_AXIS_TUSER_WIDTH = 128,
     parameter STAGE_ID = 3,  // Last stage ID
     parameter PHV_LEN = 320,  // Lightweight PHV (metadata only)
-    parameter ACT_LEN = 25,
+    parameter ACT_LEN = 8,
     parameter C_NUM_QUEUES = 4,
     parameter C_VLANID_WIDTH = 12
 )
@@ -88,50 +88,59 @@ wire                                    phv_valid_from_ae;
 wire [C_S_AXIS_DATA_WIDTH-1:0]          kv_from_ae;
 wire                                    kv_valid_from_ae;
 
+assign vlan_ready_out = 1'b1;
+
 // All FIFOs must be ready for action_engine to output
-wire all_fifos_ready = phv_fifo_ready_0 && phv_fifo_ready_1 && 
+wire all_fifos_ready = phv_fifo_ready_0 && phv_fifo_ready_1 &&
                        phv_fifo_ready_2 && phv_fifo_ready_3 &&
                        kv_fifo_ready_0 && kv_fifo_ready_1 &&
                        kv_fifo_ready_2 && kv_fifo_ready_3;
 
+wire [15:0] ptype = phv_in[15:0];
+wire [3:0] action_type = (ptype == 16'h0001) ? 4'b0100 :
+                         (ptype == 16'h0002) ? 4'b0101 :
+                         (ptype == 16'h0005) ? 4'b0110 :
+                         4'b0000;
+
+wire [24:0] fixed_actions [0:7];
+genvar act_idx;
+generate
+    for (act_idx = 0; act_idx < 8; act_idx = act_idx + 1) begin : gen_actions
+        assign fixed_actions[act_idx] = {action_type, 21'b0};
+    end
+endgenerate
+
+wire [ACT_LEN*25-1:0] action_in_to_engine = {
+    fixed_actions[7], fixed_actions[6], fixed_actions[5], fixed_actions[4],
+    fixed_actions[3], fixed_actions[2], fixed_actions[1], fixed_actions[0]
+};
+
 action_engine #(
     .STAGE_ID(STAGE_ID),
     .C_S_AXIS_DATA_WIDTH(C_S_AXIS_DATA_WIDTH),
+    .C_S_AXIS_TUSER_WIDTH(C_S_AXIS_TUSER_WIDTH),
     .PHV_LEN(PHV_LEN),
-    .ACT_LEN(ACT_LEN)
+    .KV_DATA_WIDTH(C_S_AXIS_DATA_WIDTH),
+    .ACT_LEN(ACT_LEN),
+    .RAM_ADDR_WIDTH(14)
 ) action_engine_inst (
     .clk(axis_clk),
     .rst_n(aresetn),
-
-    // Input from Stage 3
     .phv_in(phv_in),
     .phv_valid_in(phv_in_valid),
-    .kv_in(kv_in),
-    .kv_in_valid(kv_in_valid),
+    .kv_data_in(kv_in),
+    .action_in(action_in_to_engine),
+    .action_valid_in(phv_in_valid && kv_in_valid),
     .ready_out(stage_ready_out),
-
-    // Output (processed PHV and KV data)
     .phv_out(phv_from_ae),
     .phv_valid_out(phv_valid_from_ae),
-    .kv_out(kv_from_ae),
-    .kv_out_valid(kv_valid_from_ae),
+    .kv_data_out(kv_from_ae),
     .ready_in(all_fifos_ready),
-
-    // VLAN (passed through)
-    .act_vlan_in(vlan_in),
-    .act_vlan_valid_in(vlan_valid_in),
-    .act_vlan_ready(vlan_ready_out),
-    .vlan_out(),
-    .vlan_out_valid(),
-    .vlan_out_ready(1'b1),
-
-    // Control path
     .c_s_axis_tdata(c_s_axis_tdata),
     .c_s_axis_tuser(c_s_axis_tuser),
     .c_s_axis_tkeep(c_s_axis_tkeep),
     .c_s_axis_tvalid(c_s_axis_tvalid),
     .c_s_axis_tlast(c_s_axis_tlast),
-
     .c_m_axis_tdata(c_m_axis_tdata),
     .c_m_axis_tuser(c_m_axis_tuser),
     .c_m_axis_tkeep(c_m_axis_tkeep),
@@ -139,22 +148,20 @@ action_engine #(
     .c_m_axis_tlast(c_m_axis_tlast)
 );
 
-// ============================================================
-// Queue Dispatch Logic
-// ============================================================
-// 
-// PHV format (320 bits):
-//   [319:288] - ptype (32 bits)
-//   [287:256] - fid (32 bits)  ← queue_id encoded here (lower 2 bits)
-//   [255:224] - seq (32 bits)
-//   [223:192] - src_ip (32 bits)
-//   [191:160] - dst_ip (32 bits)
-//   [159:128] - ib (32 bits)
-//   [127:0]   - fill/padding (128 bits)
-//
-// Queue ID is extracted from fid[1:0] (lower 2 bits of fid field)
+assign kv_valid_from_ae = phv_valid_from_ae;
 
-wire [1:0] queue_id = phv_from_ae[256+:2];  // fid[1:0]
+// PHV (320 bits), same layout as parser_top:
+//   [15:0]     ptype
+//   [31:16]    fid
+//   [63:32]    seq
+//   [95:64]    src_ip
+//   [127:96]   dst_ip
+//   [159:128]  ib
+//   [191:160]  fill
+//   [223:192]  bitmap
+//   [225:224]  queue_id
+
+wire [1:0] queue_id = phv_from_ae[225:224];
 
 // Combinational logic for queue dispatch
 reg [PHV_LEN-1:0]                phv_out_0_next;

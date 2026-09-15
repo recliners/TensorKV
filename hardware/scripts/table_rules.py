@@ -10,8 +10,8 @@ p4 = bfrt.indq_rdma.pipe
 mirror = bfrt.mirror
 pre = bfrt.pre
 
-logfile = "/root/wly_experiment/indq_rdma/log_results/sketch.log"
-rdma_dir = "/root/wly_experiment/indq_rdma/rdma_metadata"
+logfile = os.environ.get("TKV_SKETCH_LOG", "/root/wly_experiment/indq_rdma/log_results/sketch.log")
+rdma_dir = os.environ.get("TKV_RDMA_META", "/root/wly_experiment/indq_rdma/rdma_metadata")
 
 store_flag = False
 

@@ -6,6 +6,7 @@
 #include <rte_udp.h>
 #include <rte_ethdev.h>
 #include <rte_malloc.h>
+#include <unistd.h>
 
 #include "util.h"
 #include "tx.h"

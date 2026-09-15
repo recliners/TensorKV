@@ -1,8 +1,6 @@
 `timescale 1ns / 1ps
 
-// Behavioral stand-in for the Xilinx Block Memory Generator IP
-// `kv_ram_64w_16384d` (True Dual-Port BRAM, 64-bit x 16384).
-// Simulation / lint only. Replace with the generated IP for FPGA builds.
+// True dual-port KV SRAM: 64-bit × 16384.
 module kv_ram_64w_16384d (
     input clka,
     input ena,

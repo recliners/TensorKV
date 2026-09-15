@@ -550,3 +550,32 @@ module control_prepare_memory_address #(
     end
 
 endmodule
+
+module sync_fifo_512x64 (
+    input  wire        clk,
+    input  wire        rst_n,
+    input  wire        wr_en,
+    input  wire [63:0] din,
+    input  wire        rd_en,
+    output wire [63:0] dout,
+    output wire        full,
+    output wire        empty
+);
+
+fallthrough_small_fifo #(
+    .WIDTH(64),
+    .MAX_DEPTH_BITS(9)
+) u_fifo (
+    .din(din),
+    .wr_en(wr_en),
+    .rd_en(rd_en),
+    .dout(dout),
+    .full(full),
+    .nearly_full(),
+    .prog_full(),
+    .empty(empty),
+    .reset(~rst_n),
+    .clk(clk)
+);
+
+endmodule
